@@ -777,19 +777,25 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
     };
 
 
-    // ── Save to Firestore & Trigger Backend Emails ──────────────────────────────
-    // ── Guard against concurrent saves ────────────────────────────────────
-    // useRef persists across re-renders without triggering one
-    // Add this line at the top of the component alongside other hooks:
-    // const savingRef = useRef(false);
+    // ── saveProfile ───────────────────────────────────────────────────────
+    // Add savingRef alongside other hooks at top of component:
+    //   const savingRef = useRef(false);
+    //
+    // Imports needed:
+    //   import { useRef } from 'react';
+    //   import { collection, query, where, getDocs, getDoc,
+    //            doc, writeBatch, serverTimestamp } from 'firebase/firestore';
 
     const saveProfile = async () => {
         const user = auth.currentUser;
-        if (!user) { console.error("No authenticated user found"); return; }
+        if (!user) {
+            console.error('[ProfileSetup] No authenticated user');
+            return;
+        }
 
         // ── Prevent double-submission ──────────────────────────────────────
         if (savingRef.current) {
-            console.warn('[ProfileSetup] Save already in progress — ignoring duplicate call');
+            console.warn('[ProfileSetup] Already saving — ignoring duplicate call');
             return;
         }
         savingRef.current = true;
@@ -800,79 +806,101 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
             const currentUid  = user.uid;
             const displayName = `${details.title ? details.title + ' ' : ''}${details.firstName} ${details.lastName}`.trim();
 
+            // ── Resolve schoolId ───────────────────────────────────────────
             let schoolId = school.schoolId || '';
             if (role === 'principal' && !schoolId) {
-                schoolId = `${currentUid}_${school.name.replace(/\s+/g, '_').substring(0, 30)}`;
+                schoolId = `${currentUid}_${school.name
+                    .replace(/\s+/g, '_')
+                    .substring(0, 30)}`;
             }
 
-            // ── 0. TIER LIMIT CHECK — direct Firestore count, no backend ──────
-            // Doing this client-side avoids the Render cold-start problem entirely.
-            // The backend's check-tier-limit is kept as a secondary check on upload.
+            // ── 0. TIER LIMIT CHECK ────────────────────────────────────────
+            // Uses single-field Firestore query (schoolId only) then filters
+            // by role in JS — no composite index required, always works.
             if ((role === 'teacher' || role === 'student') && schoolId) {
                 try {
-                    // Get school tier
+                    // Get school tier from Firestore
                     const schoolSnap = await getDoc(doc(db, 'schools', schoolId));
+
                     if (!schoolSnap.exists()) {
-                        setError('School not found. Ask your principal to register the school first.');
+                        setError(
+                            'School not found. Ask your principal to ' +
+                            'register the school first.'
+                        );
                         return;
                     }
 
                     const tier = (schoolSnap.data().tier || 'free').toLowerCase();
 
+                    // Tier limits — teachers and students per plan
                     const LIMITS = {
-                        free:     { teachers:  2, students:   30 },
-                        silver:   { teachers:  5, students:  150 },
-                        gold:     { teachers: 10, students:  300 },
-                        platinum: { teachers: 25, students:  800 },
-                        diamond:  { teachers: 50, students: 2000 },
+                        free:     { teacher:  2, student:    30 },
+                        silver:   { teacher:  5, student:   150 },
+                        gold:     { teacher: 10, student:   300 },
+                        platinum: { teacher: 25, student:   800 },
+                        diamond:  { teacher: 50, student:  2000 },
                     };
 
-                    const tierLimits  = LIMITS[tier] || LIMITS.free;
-                    const limitKey    = role === 'teacher' ? 'teachers' : 'students';
-                    const maxAllowed  = tierLimits[limitKey];
+                    const maxAllowed = (LIMITS[tier] || LIMITS.free)[role] || 0;
 
-                    // Count existing users of this role in the school
-                    const existingSnap = await getDocs(
+                    // Single-field query — no composite index needed
+                    const usersSnap = await getDocs(
                         query(
                             collection(db, 'users'),
                             where('schoolId', '==', schoolId),
-                            where('role',     '==', role),
                         )
                     );
-                    const currentCount = existingSnap.size;
 
-                    console.log(`[Tier Check] ${tier} tier | ${limitKey}: ${currentCount}/${maxAllowed}`);
+                    // Filter by role in JavaScript
+                    const currentCount = usersSnap.docs.filter(
+                        d => d.data().role === role
+                    ).length;
+
+                    console.log(
+                        `[Tier Check] ${tier} plan | ` +
+                        `${role}: ${currentCount}/${maxAllowed}`
+                    );
 
                     if (currentCount >= maxAllowed) {
+                        const tierDisplay =
+                            tier.charAt(0).toUpperCase() + tier.slice(1);
                         setError(
-                            `This school has reached the ${tier.charAt(0).toUpperCase() + tier.slice(1)} ` +
-                            `plan limit of ${maxAllowed} ${limitKey}. ` +
-                            `Please ask your principal to upgrade the plan.`
+                            `This school has reached the ${tierDisplay} plan ` +
+                            `limit of ${maxAllowed} ${role}s. ` +
+                            `Please ask your principal to upgrade the plan ` +
+                            `to add more ${role}s.`
                         );
-                        return;
+                        return;   // ← stop here, do not write to Firestore
                     }
+
                 } catch (limitErr) {
-                    // Firestore read failed — fail open, log warning
-                    console.warn('[Tier Check] Firestore check failed — continuing:', limitErr.message);
+                    // Unexpected error — log and fail open
+                    // (index errors are avoided by single-field query above)
+                    console.warn(
+                        '[Tier Check] Could not verify limit — continuing:',
+                        limitErr.message
+                    );
                 }
             }
 
-            // ── 1. FIRESTORE BATCH ─────────────────────────────────────────────
+            // ── 1. FIRESTORE BATCH ─────────────────────────────────────────
             const profileCol = role === 'principal' ? 'principals'
                              : role === 'teacher'   ? 'teachers'
                              :                        'students';
 
             const batch = writeBatch(db);
 
-            // users/{uid} — base user document
+            // users/{uid} — base document
             batch.set(doc(db, 'users', currentUid), {
                 uid:         currentUid,
                 email,
                 displayName,
                 role,
                 schoolId:    schoolId || '',
+                photoURL:    user?.photoURL || '',
                 createdAt:   serverTimestamp(),
-                // Principals auto-approved — teachers/students have no field (= pending)
+                // Principals auto-approved
+                // Teachers/students have NO approval fields = pending
                 ...(role === 'principal' && {
                     approvalStatus: 'approved',
                     approved:       true,
@@ -897,7 +925,7 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
                 });
             }
 
-            // role-specific profile document
+            // role-specific profile — teachers/{uid} or students/{uid}
             batch.set(doc(db, profileCol, currentUid), {
                 uid:         currentUid,
                 email,
@@ -907,7 +935,8 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
                 lastName:    details.lastName,
                 role,
                 schoolId,
-                schoolName:  school.name || '',
+                schoolName:  school.name    || '',
+                photoURL:    user?.photoURL || '',
                 createdAt:   serverTimestamp(),
                 ...(role === 'principal' && {
                     tier:           'free',
@@ -920,8 +949,11 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
             });
 
             await batch.commit();
+            console.log('[ProfileSetup] Batch committed successfully');
 
-            // ── 2. EMAILS via Netlify Functions (fire and forget) ──────────────
+            // ── 2. WELCOME EMAIL via Netlify Function (fire and forget) ────
+            // NOTE: notifyPrincipal is called in PasswordPage.handleSetupComplete
+            // NOT here — calling it in both places creates duplicate activity entries
             fetch('/.netlify/functions/send-welcome-email', {
                 method:  'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -937,34 +969,18 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
                 }),
             }).catch(e => console.warn('[Welcome Email]:', e.message));
 
-            if (role !== 'principal' && schoolId) {
-                fetch('/.netlify/functions/notify-principal', {
-                    method:  'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        uid:         currentUid,
-                        email,
-                        displayName,
-                        firstName:   details.firstName,
-                        role,
-                        schoolId,
-                        schoolName:  school.name      || '',
-                        grade:       details.grade    || '',
-                        subjects:    details.subjects || [],
-                        photoURL:    user?.photoURL   || '',
-                    }),
-                }).catch(e => console.warn('[Principal Notify]:', e.message));
-            }
-
-            // ── 3. Advance to done screen ──────────────────────────────────────
+            // ── 3. Advance wizard to done screen ───────────────────────────
             setStep(3);
 
         } catch (err) {
             console.error('[ProfileSetup] Save failed:', err);
-            setError('Could not save your profile. Please check your connection and try again.');
+            setError(
+                'Could not save your profile. ' +
+                'Please check your connection and try again.'
+            );
         } finally {
             setSaving(false);
-            savingRef.current = false;   // ← always release the lock
+            savingRef.current = false;  // always release lock
         }
     };
 
