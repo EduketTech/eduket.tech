@@ -777,171 +777,167 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
 
 
     // ── Save to Firestore & Trigger Backend Emails ──────────────────────────────
-const saveProfile = async () => {
-    const user = auth.currentUser;
+    const saveProfile = async () => {
+        const user = auth.currentUser;
+        if (!user) { console.error("No authenticated user found"); return; }
 
-    if (!user) {
-        console.error("No authenticated user found");
-        return;
-    }
+        setSaving(true);
+        setError('');
 
-    setSaving(true);
-    setError('');
+        const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 
-    // 🔑 Fix 1: Safe fallback for apiBase
-    const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+        try {
+            const currentUid = user.uid;
+            const displayName = `${details.title ? details.title + ' ' : ''}${details.firstName} ${details.lastName}`.trim();
 
-    try {
-        const currentUid = user.uid;
-        const displayName = `${details.title ? details.title + ' ' : ''}${details.firstName} ${details.lastName}`.trim();
-
-        let schoolId = school.schoolId || '';
-        if (role === 'principal' && !schoolId) {
-            schoolId = `${currentUid}_${school.name.replace(/\s+/g, '_').substring(0, 30)}`;
-        }
-
-        // ── 0. BACKEND TIER LIMIT CHECK ──────────────────────────────────────
-        if (role === 'teacher' || role === 'student') {
-            if (!schoolId) {
-                setError('Please select a valid school before continuing.');
-                setSaving(false);
-                return;
+            let schoolId = school.schoolId || '';
+            if (role === 'principal' && !schoolId) {
+                schoolId = `${currentUid}_${school.name.replace(/\s+/g, '_').substring(0, 30)}`;
             }
 
-            try {
-                const limitCheckRes = await fetch(`${apiBase}/check-tier-limit`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        schoolId,
-                        role // 'teacher' or 'student'
-                    })
-                });
+            // ── 0. TIER LIMIT CHECK — fail open if backend unavailable ──────────
+            if ((role === 'teacher' || role === 'student') && schoolId) {
+                try {
+                    const limitRes = await fetch(`${apiBase}/check-tier-limit`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ schoolId, role }),
+                       signal: (() => {
+    const c = new AbortController();
+    setTimeout(() => c.abort(), 8000);
+    return c.signal;
+})(),
+                    });
+                    const limitData = await limitRes.json();
 
-                const limitData = await limitCheckRes.json();
-
-                if (limitCheckRes.status === 403 || !limitCheckRes.ok) {
-                    setError(limitData.message || limitData.error || 'Registration limit reached for this school.');
-                    setSaving(false);
-                    return; // Stop profile save without crashing flow
+                    if (limitRes.status === 403) {
+                        // Explicit limit exceeded — show the message and stop
+                        setError(limitData.message || limitData.error
+                            || 'Registration limit reached for this school. Contact your principal.');
+                        setSaving(false);
+                        return;
+                    }
+                    // Any other non-ok status — fail open and continue
+                } catch (limitErr) {
+                    // Backend sleeping or unreachable — do NOT block registration
+                    // Principal can manage excess users from the dashboard
+                    console.warn('[Tier Check] Backend unavailable — continuing:', limitErr.message);
                 }
-            } catch (fetchErr) {
-                console.error('[Tier Limit Check Error]:', fetchErr);
-                // Fail-open or show network warning if server is down:
-                setError('Could not connect to validation server. Please check your network and try again.');
-                setSaving(false);
-                return;
             }
-        }
 
-        // ── 1. FIRESTORE BATCH PREPARATION ─────────────────────────────────
-        const profileCol = role === 'principal' ? 'principals' :
-            role === 'teacher' ? 'teachers' : 'students';
+            // ── 1. FIRESTORE BATCH ───────────────────────────────────────────────
+            const profileCol = role === 'principal' ? 'principals'
+                : role === 'teacher' ? 'teachers'
+                    : 'students';
 
-        const batch = writeBatch(db);
+            const batch = writeBatch(db);
 
-        // Base User Document
-        const userRef = doc(db, 'users', currentUid);
-        batch.set(userRef, {
-            uid: currentUid,
-            email,
-            displayName,
-            role,
-            schoolId: schoolId || '',
-            createdAt: serverTimestamp(),
-        });
-
-        // School creation (Principal)
-        if (role === 'principal' && school.name) {
-            const schoolRef = doc(db, 'schools', schoolId);
-            batch.set(schoolRef, {
-                schoolId,
-                schoolName: school.name,
-                searchName: school.name.toLowerCase(),
-                country: school.country || '',
-                curriculum: school.curriculum || '',
-                address: school.address || '',
-                institutionType: details.institutionType || '',
-                photoURL: user?.photoURL || '', 
-                tier: 'free',
-                registeredBy: currentUid,
-                principalUid: currentUid,
-                createdAt: serverTimestamp(),
-            });
-        }
-
-        // Role-Specific Document
-        const isApproved = role === 'principal'; 
-
-        const profileData = {
-            uid: currentUid,
-            email,
-            displayName,
-            name: displayName,
-            firstName: details.firstName,
-            lastName: details.lastName,
-            role,
-            schoolId: schoolId,
-            schoolName: school.name || '',
-            createdAt: serverTimestamp(),
-            ...(role === 'principal' && { tier: 'free' }),
-            ...(details.title && { title: details.title }),
-            ...(details.grade && { grade: details.grade }),
-            ...(details.subjects && { subjects: details.subjects }),
-        };
-
-        const profileRef = doc(db, profileCol, currentUid);
-        batch.set(profileRef, profileData);
-
-        // ── 2. COMMIT FIRESTORE WRITES ──────────────────────────────────────
-        await batch.commit();
-
-        // ── 3. OPTIONAL EMAILS (NON-BLOCKING) ──────────────────────────────
-        // Wrap emails in independent try/catch so email server delays don't hang registration
-        fetch(`${apiBase}/send-welcome-email`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
+            // users/{uid}
+            batch.set(doc(db, 'users', currentUid), {
+                uid: currentUid,
                 email,
                 displayName,
-                firstName: details.firstName,
                 role,
-                schoolName: school.name || '',
-                principalEmail: school.principalEmail || school.email || 'nextgenskills96@gmail.com',
-                grade: details.grade || '',
-                subjects: details.subjects || [],
-                dashboardUrl: 'https://eduket.tech'
-            }),
-        }).catch(e => console.error('[Welcome Email Error]:', e));
+                schoolId: schoolId || '',
+                createdAt: serverTimestamp(),
+                // Principals are auto-approved — teachers/students have no field (= pending)
+                ...(role === 'principal' && {
+                    approvalStatus: 'approved',
+                    approved: true,
+                }),
+            });
 
-        if (!isApproved && schoolId) {
-            fetch(`${apiBase}/notify-principal-signup`, {
+            // schools/{schoolId} — principals only
+            if (role === 'principal' && school.name) {
+                batch.set(doc(db, 'schools', schoolId), {
+                    schoolId,
+                    schoolName: school.name,
+                    searchName: school.name.toLowerCase(),
+                    country: school.country || '',
+                    curriculum: school.curriculum || '',
+                    address: school.address || '',
+                    institutionType: details.institutionType || '',
+                    photoURL: user?.photoURL || '',
+                    tier: 'free',
+                    registeredBy: currentUid,
+                    principalUid: currentUid,
+                    createdAt: serverTimestamp(),
+                });
+            }
+
+            // role-specific profile document
+            batch.set(doc(db, profileCol, currentUid), {
+                uid: currentUid,
+                email,
+                displayName,
+                name: displayName,
+                firstName: details.firstName,
+                lastName: details.lastName,
+                role,
+                schoolId,
+                schoolName: school.name || '',
+                createdAt: serverTimestamp(),
+                // Principals auto-approved
+                ...(role === 'principal' && {
+                    tier: 'free',
+                    approvalStatus: 'approved',
+                    approved: true,
+                }),
+                ...(details.title && { title: details.title }),
+                ...(details.grade && { grade: details.grade }),
+                ...(details.subjects && { subjects: details.subjects }),
+            });
+
+            await batch.commit();
+
+            // ── 2. EMAILS via Netlify Functions (fire and forget) ─────────────────
+            // Welcome email to new user
+            fetch('/.netlify/functions/send-welcome-email', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    uid: currentUid,
                     email,
                     displayName,
                     firstName: details.firstName,
                     role,
-                    schoolId,
                     schoolName: school.name || '',
                     grade: details.grade || '',
-                    subjects: details.subjects || []
+                    subjects: details.subjects || [],
+                    dashboardUrl: 'https://eduket.tech',
                 }),
-            }).catch(e => console.error('[Principal Notification Error]:', e));
+            }).catch(e => console.warn('[Welcome Email]:', e.message));
+
+            // Notify principal when teacher or student joins
+            if (role !== 'principal' && schoolId) {
+                fetch('/.netlify/functions/notify-principal', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        uid: currentUid,
+                        email,
+                        displayName,
+                        firstName: details.firstName,
+                        role,
+                        schoolId,
+                        schoolName: school.name || '',
+                        grade: details.grade || '',
+                        subjects: details.subjects || [],
+                        photoURL: user?.photoURL || '',
+                    }),
+                }).catch(e => console.warn('[Principal Notify]:', e.message));
+            }
+
+            // ── 3. Advance to done screen ─────────────────────────────────────────
+            setStep(3);
+
+        } catch (err) {
+            console.error('[ProfileSetup] Save failed:', err);
+            setError('Could not save your profile. Please check your connection and try again.');
+        } finally {
+            setSaving(false);
         }
+    };
 
-        // 🔑 Advance to done screen!
-        setStep(3);
-
-    } catch (err) {
-        console.error('[ProfileSetup] Save failed:', err);
-        setError('Could not save your profile. Please check your connection and try again.');
-    } finally {
-        setSaving(false);
-    }
-};
     // ── Next / back handlers ──────────────────────────────────────────────────
     const handleNext = async () => {
         if (step === 2) {
