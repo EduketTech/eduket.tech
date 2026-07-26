@@ -24,12 +24,13 @@ import {
 const APP_NAME = 'Eduket OS';
 const COMPANY_NAME = 'Nextgen Skills Development';
 const WEBSITE = 'https://eduket.tech';
+const EMAIL_ADDRESS = 'nextgenskills96@gmail.com';
 
-const SUPPORT_EMAIL = 'support@eduket.tech';
-const SALES_EMAIL = 'sales@eduket.tech';
-const LEGAL_EMAIL = 'legal@eduket.tech';
-const PRIVACY_EMAIL = 'privacy@eduket.tech';
-const SECURITY_EMAIL = 'security@eduket.tech';
+const SUPPORT_EMAIL = [EMAIL_ADDRESS];
+const SALES_EMAIL = [EMAIL_ADDRESS];
+const LEGAL_EMAIL = [EMAIL_ADDRESS];
+const PRIVACY_EMAIL = [EMAIL_ADDRESS];
+const SECURITY_EMAIL = [EMAIL_ADDRESS];
 
 const PHONE_NUMBER = '+27 65 656 4983'; // e.g. '+27 41 000 0000' — leave blank to hide the card
 const WHATSAPP_NUMBER = '27656564983'; // e.g. '27820000000' (digits only, no +) — leave blank to hide

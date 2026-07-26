@@ -26,12 +26,13 @@ import {
 } from 'lucide-react';
 
 // ── Effective date — update whenever the terms change ─────────────────────
+const EMAIL_ADDRESS = 'nextgenskills96@gmail.com';
 const EFFECTIVE_DATE = '12 July 2026';
 const LAST_REVIEWED = '12 July 2026';
 const COMPANY_NAME = 'Nextgen Skills Development';
 const APP_NAME = 'Eduket OS';
-const CONTACT_EMAIL = 'support@eduket.tech';
-const LEGAL_EMAIL = 'legal@eduket.tech';
+const CONTACT_EMAIL = [EMAIL_ADDRESS];
+const LEGAL_EMAIL = [EMAIL_ADDRESS];
 const WEBSITE = 'https://eduket.tech';
 const JURISDICTION = 'South Africa';
 

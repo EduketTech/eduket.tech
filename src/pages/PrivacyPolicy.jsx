@@ -22,14 +22,14 @@ import {
     Mail, Phone, FileText, AlertCircle, CheckCircle2,
     ChevronRight, ArrowLeft,
 } from 'lucide-react';
-
+const EMAIL_ADDRESS = 'nextgenskills96@gmail.com';
 // ── Effective date — update whenever the policy changes ───────────────────
 const EFFECTIVE_DATE = '12 July 2026';
 const LAST_REVIEWED = '12 July 2026';
 const COMPANY_NAME = 'Nextgen Skills Development';
 const APP_NAME = 'Eduket OS';
-const CONTACT_EMAIL = 'privacy@eduket.tech';
-const SUPPORT_EMAIL = 'support@eduket.tech';
+const CONTACT_EMAIL = EMAIL_ADDRESS;
+const SUPPORT_EMAIL = EMAIL_ADDRESS;
 const COMPANY_ADDRESS = 'South Africa';
 const WEBSITE = 'https://eduket.tech';
 const INFO_REGULATOR_URL = 'https://inforegulator.org.za';
