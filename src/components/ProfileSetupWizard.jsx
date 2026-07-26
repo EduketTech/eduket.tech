@@ -803,7 +803,7 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
         setError('');
 
         try {
-            const currentUid  = user.uid;
+            const currentUid = user.uid;
             const displayName = `${details.title ? details.title + ' ' : ''}${details.firstName} ${details.lastName}`.trim();
 
             // ── Resolve schoolId ───────────────────────────────────────────
@@ -834,11 +834,11 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
 
                     // Tier limits — teachers and students per plan
                     const LIMITS = {
-                        free:     { teacher:  2, student:    30 },
-                        silver:   { teacher:  5, student:   150 },
-                        gold:     { teacher: 10, student:   300 },
-                        platinum: { teacher: 25, student:   800 },
-                        diamond:  { teacher: 50, student:  2000 },
+                        free: { teacher: 2, student: 30 },
+                        silver: { teacher: 5, student: 150 },
+                        gold: { teacher: 10, student: 300 },
+                        platinum: { teacher: 25, student: 800 },
+                        diamond: { teacher: 50, student: 2000 },
                     };
 
                     const maxAllowed = (LIMITS[tier] || LIMITS.free)[role] || 0;
@@ -885,25 +885,25 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
 
             // ── 1. FIRESTORE BATCH ─────────────────────────────────────────
             const profileCol = role === 'principal' ? 'principals'
-                             : role === 'teacher'   ? 'teachers'
-                             :                        'students';
+                : role === 'teacher' ? 'teachers'
+                    : 'students';
 
             const batch = writeBatch(db);
 
             // users/{uid} — base document
             batch.set(doc(db, 'users', currentUid), {
-                uid:         currentUid,
+                uid: currentUid,
                 email,
                 displayName,
                 role,
-                schoolId:    schoolId || '',
-                photoURL:    user?.photoURL || '',
-                createdAt:   serverTimestamp(),
+                schoolId: schoolId || '',
+                photoURL: user?.photoURL || '',
+                createdAt: serverTimestamp(),
                 // Principals auto-approved
                 // Teachers/students have NO approval fields = pending
                 ...(role === 'principal' && {
                     approvalStatus: 'approved',
-                    approved:       true,
+                    approved: true,
                 }),
             });
 
@@ -911,63 +911,46 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
             if (role === 'principal' && school.name) {
                 batch.set(doc(db, 'schools', schoolId), {
                     schoolId,
-                    schoolName:      school.name,
-                    searchName:      school.name.toLowerCase(),
-                    country:         school.country          || '',
-                    curriculum:      school.curriculum       || '',
-                    address:         school.address          || '',
+                    schoolName: school.name,
+                    searchName: school.name.toLowerCase(),
+                    country: school.country || '',
+                    curriculum: school.curriculum || '',
+                    address: school.address || '',
                     institutionType: details.institutionType || '',
-                    photoURL:        user?.photoURL          || '',
-                    tier:            'free',
-                    registeredBy:    currentUid,
-                    principalUid:    currentUid,
-                    createdAt:       serverTimestamp(),
+                    photoURL: user?.photoURL || '',
+                    tier: 'free',
+                    registeredBy: currentUid,
+                    principalUid: currentUid,
+                    createdAt: serverTimestamp(),
                 });
             }
 
             // role-specific profile — teachers/{uid} or students/{uid}
             batch.set(doc(db, profileCol, currentUid), {
-                uid:         currentUid,
+                uid: currentUid,
                 email,
                 displayName,
-                name:        displayName,
-                firstName:   details.firstName,
-                lastName:    details.lastName,
+                name: displayName,
+                firstName: details.firstName,
+                lastName: details.lastName,
                 role,
                 schoolId,
-                schoolName:  school.name    || '',
-                photoURL:    user?.photoURL || '',
-                createdAt:   serverTimestamp(),
+                schoolName: school.name || '',
+                photoURL: user?.photoURL || '',
+                createdAt: serverTimestamp(),
                 ...(role === 'principal' && {
-                    tier:           'free',
+                    tier: 'free',
                     approvalStatus: 'approved',
-                    approved:       true,
+                    approved: true,
                 }),
-                ...(details.title    && { title:    details.title }),
-                ...(details.grade    && { grade:    details.grade }),
+                ...(details.title && { title: details.title }),
+                ...(details.grade && { grade: details.grade }),
                 ...(details.subjects && { subjects: details.subjects }),
             });
 
             await batch.commit();
             console.log('[ProfileSetup] Batch committed successfully');
 
-            // ── 2. WELCOME EMAIL via Netlify Function (fire and forget) ────
-            // NOTE: notifyPrincipal is called in PasswordPage.handleSetupComplete
-            // NOT here — calling it in both places creates duplicate activity entries
-            fetch('/.netlify/functions/send-welcome-email', {
-                method:  'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    email,
-                    displayName,
-                    firstName:   details.firstName,
-                    role,
-                    schoolName:  school.name      || '',
-                    grade:       details.grade    || '',
-                    subjects:    details.subjects || [],
-                    dashboardUrl: 'https://eduket.tech',
-                }),
-            }).catch(e => console.warn('[Welcome Email]:', e.message));
 
             // ── 3. Advance wizard to done screen ───────────────────────────
             setStep(3);
