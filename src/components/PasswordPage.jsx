@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   signInWithEmailAndPassword,
@@ -7,15 +7,10 @@ import {
   signInWithPopup,
   signOut,
 } from 'firebase/auth';
-import {
-  doc, getDoc
-} from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import ReCAPTCHA from 'react-google-recaptcha';
 import Swal from 'sweetalert2';
-import {
-  Shield, Lock, Eye,
-  X as XIcon, EyeOff,
-} from 'lucide-react';
+import { Shield, Lock, Eye, X as XIcon, EyeOff } from 'lucide-react';
 import { auth, db } from '../utils/firebase';
 import { ProfileSetupWizard } from './ProfileSetupWizard';
 import Navbar from './landing/Navbar';
@@ -45,358 +40,28 @@ const AUTH_ERRORS = {
   'auth/popup-closed-by-user': '',
   'auth/popup-blocked': 'Popup blocked. Please allow popups for this site.',
   'auth/network-request-failed': 'Network error. Check your connection.',
-  'auth/password-does-not-meet-requirements': null,
+  'auth/password-does-not-meet-requirements': null, // handled separately
 };
+
 const AUTH_DEFAULT_ERROR = 'Something went wrong. Please try again.';
 const getFriendlyError = (code) => AUTH_ERRORS[code] ?? AUTH_DEFAULT_ERROR;
 
 // ══════════════════════════════════════════════════════════════════════════════
-// SHARED UI PRIMITIVES
+// EMAIL HELPERS — Netlify Functions
 // ══════════════════════════════════════════════════════════════════════════════
-
-function ErrorBox({ message }) {
-  if (!message) return null;
-  return (
-    <div className="p-3 rounded-xl bg-[#FF3B5C]/10 border border-[#FF3B5C]/20 text-sm text-[#FF3B5C] font-medium mb-4">
-      {message}
-    </div>
-  );
-}
-
-function Divider() {
-  return (
-    <div className="relative my-6">
-      <div className="absolute inset-0 flex items-center">
-        <div className="w-full border-t border-white/10" />
-      </div>
-      <div className="relative flex justify-center text-xs">
-        <span className="px-3 bg-[#141822] text-[#AEB7C7] font-medium">or continue with</span>
-      </div>
-    </div>
-  );
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// AUTH MODAL
-// ══════════════════════════════════════════════════════════════════════════════
-
-function AuthModal({ isOpen, onClose, onSuccess, onNeedsSetup, setStudentInfo }) {
-  const [isRegistering, setIsRegistering] = useState(false);
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const [captchaToken, setCaptchaToken] = useState(null);
-  const [error, setError] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const captchaRef = useRef(null);
-
-  const resetForm = useCallback(() => {
-    setEmail(''); setPassword(''); setError('');
-    setCaptchaToken(null); captchaRef.current?.reset();
-  }, []);
-
-  const handleClose = () => { resetForm(); onClose(); };
-  const toggleMode = () => { setIsRegistering(v => !v); setError(''); };
-
-  // 1. UPDATED routeExistingUser inside AuthModal
-const routeExistingUser = async (uid) => {
-  const userSnap = await getDoc(doc(db, 'users', uid));
-  if (!userSnap.exists()) { onNeedsSetup?.(uid, email); return; }
-
-  const { role, schoolId } = userSnap.data();
-  const col = role === 'principal' ? 'principals'
-            : role === 'teacher'   ? 'teachers'
-            :                        'students';
-  const profSnap = await getDoc(doc(db, col, uid));
-
-  const profile = profSnap.exists()
-    ? { ...profSnap.data(), role, schoolId, uid }
-    : { role, schoolId, uid };
-
-  if (role === 'student') {
-    setStudentInfo?.(profile);
-    localStorage.setItem('user-session', JSON.stringify(profile));
-  }
-
-  resetForm();
-
-  // ── Check approval status — handle both field formats ────────────────────
-  // Registration writes: approved: false (boolean)
-  // Principal action writes: approvalStatus: 'approved'|'declined' (string)
-  const isDeclined = profile.approvalStatus === 'declined'
-                  || profile.approved === false;
-
-  const isPending  = role !== 'principal'
-                  && profile.approvalStatus == null   // never been reviewed
-                  && profile.approved === false;       // registration set this
-
-  if (role !== 'principal' && isDeclined && !isPending) {
-    onClose();
-    await Swal.fire({
-      icon:  'error',
-      title: 'Access Declined',
-      html:  `
-        <p>Your registration has been declined by the school principal.</p>
-        <p style="font-size:13px;color:#6b7280;margin-top:8px">
-          Contact your school admin or email
-          <a href="mailto:support@eduket.tech">support@eduket.tech</a>
-          if you believe this is a mistake.
-        </p>
-      `,
-      confirmButtonColor: '#4F46E5',
-      confirmButtonText:  'OK',
-    });
-    await signOut(auth);
-    return;
-  }
-
-  // Pending — principal has not reviewed yet
-  if (isPending) {
-    onClose();
-    navigate('/pending-approval');
-    return;
-  }
-
-  onSuccess?.(profile);
-};
-
-
-  const handleEmailSubmit = async (e) => {
-    e.preventDefault();
-    if (!captchaToken) { setError('Please complete the security check first.'); return; }
-    setIsSubmitting(true); setError('');
-    try {
-      if (isRegistering) {
-        const cred = await createUserWithEmailAndPassword(auth, email, password);
-        resetForm(); onClose();
-        onNeedsSetup?.(cred.user.uid, cred.user.email);
-      } else {
-        const cred = await signInWithEmailAndPassword(auth, email, password);
-        await routeExistingUser(cred.user.uid);
-      }
-    } catch (err) {
-      console.error('[Auth] Registration failed:', err.code, err.message);
-
-      let msg = '';
-
-      if (err.code === 'auth/password-does-not-meet-requirements') {
-        // Firebase message contains the exact requirements in square brackets
-        // e.g. "[Password must contain an upper case character, ...]"
-        const match = err.message.match(/\[([^\]]+)\]/);
-        if (match) {
-          const requirements = match[1]
-            .split(',')
-            .map(r => r.trim())
-            .join('\n• ');
-          msg = `Password does not meet requirements:\n• ${requirements}`;
-        } else {
-          msg = 'Password does not meet the required security standards.';
-        }
-      } else {
-        msg = getFriendlyError(err.code) || err.message || 'Something went wrong. Please try again.';
-      }
-
-      setError(msg);
-      setCaptchaToken(null);
-      captchaRef.current?.reset();
-    }
-  };
-
-  const handleGoogle = async () => {
-    setError(''); setIsSubmitting(true);
-    try {
-      const cred = await signInWithPopup(auth, new GoogleAuthProvider());
-      const uid = cred.user.uid;
-      const snap = await getDoc(doc(db, 'users', uid));
-      if (snap.exists()) {
-        await routeExistingUser(uid);
-      } else {
-        resetForm(); onClose();
-        onNeedsSetup?.(uid, cred.user.email);
-      }
-    } catch (err) {
-      const msg = getFriendlyError(err.code);
-      if (msg) setError(msg);
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  if (!isOpen) return null;
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md"
-      onClick={(e) => e.target === e.currentTarget && handleClose()}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        className="bg-[#141822] w-full max-w-md rounded-[2rem] p-8 sm:p-10 shadow-2xl relative border border-white/10 max-h-[90vh] overflow-y-auto animate-in zoom-in-95 duration-200"
-      >
-        <button
-          onClick={handleClose}
-          aria-label="Close"
-          className="absolute top-5 right-5 p-1.5 text-[#AEB7C7] hover:text-[#FF3B5C] transition-colors rounded-lg hover:bg-white/5"
-        >
-          <XIcon size={20} />
-        </button>
-
-        <div className="flex items-center justify-center gap-2 mb-6 py-2.5 px-4 rounded-xl bg-[#22C55E]/10 border border-[#22C55E]/20">
-          <Shield size={14} className="text-[#22C55E]" />
-          <span className="font-plex-sans text-xs font-bold text-[#22C55E]">
-            Protected by Firebase + reCAPTCHA
-          </span>
-          <Lock size={12} className="text-[#22C55E]" />
-        </div>
-
-        <h2 className="font-zilla text-2xl sm:text-3xl font-bold mb-1 text-[#F3F6FB]">
-          {isRegistering ? 'Create account' : 'Welcome back'}
-        </h2>
-        <p className="font-plex-sans text-sm text-[#AEB7C7] mb-7">
-          {isRegistering ? 'Join Eduket OS to get started.' : 'Access your school dashboard securely.'}
-        </p>
-
-        <ErrorBox message={error} />
-
-        <form onSubmit={handleEmailSubmit} className="space-y-4" noValidate>
-          <div>
-            <label htmlFor="auth-email" className="font-plex-mono block text-[10px] font-semibold uppercase tracking-widest text-[#AEB7C7] mb-1.5">
-              Email address
-            </label>
-            <input
-              id="auth-email"
-              type="email"
-              autoComplete="email"
-              placeholder="you@school.co.za"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="w-full border border-white/10 bg-[#0A0D14] text-[#F3F6FB] p-4 rounded-xl outline-none text-sm focus:border-[#1EA1FE] transition-colors placeholder:text-[#AEB7C7]/50"
-            />
-          </div>
-
-          <div>
-            <label htmlFor="auth-password" className="font-plex-mono block text-[10px] font-semibold uppercase tracking-widest text-[#AEB7C7] mb-1.5">
-              Password
-            </label>
-            <div className="relative">
-              <input
-                id="auth-password"
-                type={showPassword ? 'text' : 'password'}
-                autoComplete={isRegistering ? 'new-password' : 'current-password'}
-                placeholder="••••••••"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full border border-white/10 bg-[#0A0D14] text-[#F3F6FB] p-4 pr-12 rounded-xl outline-none text-sm focus:border-[#1EA1FE] transition-colors placeholder:text-[#AEB7C7]/50"
-              />
-              {isRegistering && (
-                <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
-                  Password must contain: uppercase letter, lowercase letter,
-                  number, and a special character (e.g. !@#$%)
-                </p>
-              )}
-              <button
-                type="button"
-                onClick={() => setShowPassword(v => !v)}
-                aria-label={showPassword ? 'Hide password' : 'Show password'}
-                className="absolute right-4 top-1/2 -translate-y-1/2 text-[#AEB7C7] hover:text-[#F3F6FB] transition-colors"
-              >
-                {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-              </button>
-            </div>
-          </div>
-
-          <div>
-            <label className="font-plex-mono block text-[10px] font-semibold uppercase tracking-widest text-[#AEB7C7] mb-2">
-              Security check
-            </label>
-            <div className="border border-white/10 rounded-xl p-3 flex items-center justify-center bg-[#0A0D14]">
-              <ReCAPTCHA
-                ref={captchaRef}
-                sitekey={import.meta.env.VITE_RECAPTCHA_SITE_KEY_V2}
-                onChange={(token) => setCaptchaToken(token)}
-                onExpired={() => setCaptchaToken(null)}
-                onErrored={() => setCaptchaToken(null)}
-                theme="dark"
-              />
-            </div>
-            <p className={`font-plex-sans mt-1.5 text-[11px] text-center ${captchaToken ? 'text-[#22C55E]' : 'text-[#AEB7C7]'}`}>
-              {captchaToken ? '✓ Security check passed' : 'Verify you are human to continue.'}
-            </p>
-          </div>
-
-          <button
-            type="submit"
-            disabled={!captchaToken || isSubmitting}
-            className="w-full py-4 rounded-xl font-bold text-sm uppercase tracking-widest transition-all shadow-lg bg-[#1EA1FE] hover:bg-[#4BB8FF] text-[#0A0D14] shadow-[#1EA1FE]/20 disabled:bg-white/5 disabled:text-[#AEB7C7]/50 disabled:shadow-none disabled:cursor-not-allowed"
-          >
-            {isSubmitting ? 'Please wait…'
-              : !captchaToken ? 'Complete security check first'
-                : isRegistering ? 'Create account'
-                  : 'Sign in'}
-          </button>
-        </form>
-
-        <Divider />
-
-        <button
-          type="button"
-          onClick={handleGoogle}
-          disabled={isSubmitting}
-          className="w-full py-4 border border-white/10 hover:bg-white/5 rounded-xl flex items-center justify-center gap-3 transition-all font-bold text-sm text-[#F3F6FB] disabled:opacity-50"
-        >
-          <img src="https://www.gstatic.com/images/branding/product/1x/gsa_64dp.png" className="w-5 h-5" alt="Google" />
-          Continue with Google
-        </button>
-
-        <div className="mt-5 p-3 rounded-xl bg-[#0A0D14] border border-white/5">
-          <p className="font-plex-sans text-center text-[10px] text-[#AEB7C7] leading-relaxed">
-            Protected by reCAPTCHA &middot;{' '}
-            <a href="https://policies.google.com/privacy" target="_blank" rel="noopener noreferrer"
-              className="underline hover:text-[#1EA1FE]">Privacy</a>{' '}
-            &{' '}
-            <a href="https://policies.google.com/terms" target="_blank" rel="noopener noreferrer"
-              className="underline hover:text-[#1EA1FE]">Terms</a>{' '}
-            apply. Data encrypted on Firebase.
-          </p>
-        </div>
-
-        <p className="font-plex-sans text-center mt-5 text-sm font-medium text-[#AEB7C7]">
-          {isRegistering ? 'Already have an account?' : 'New to Eduket?'}{' '}
-          <button
-            type="button"
-            onClick={toggleMode}
-            className="text-[#1EA1FE] font-bold hover:underline underline-offset-4"
-          >
-            {isRegistering ? 'Sign in instead' : 'Register now'}
-          </button>
-        </p>
-      </div>
-    </div>
-  );
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// MAIN PAGE
-// ══════════════════════════════════════════════════════════════════════════════
-
-// ── Email helpers — Netlify Functions (no backend needed) ─────────────────
 
 const sendWelcomeEmail = (profile, dashboardUrl) => {
-  // Fire and forget — never block navigation
   fetch('/.netlify/functions/send-welcome-email', {
-    method:  'POST',
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      email:        profile.email        || '',
-      displayName:  profile.displayName  || '',
-      firstName:    profile.firstName    || '',
-      role:         profile.role,
-      schoolName:   profile.schoolName   || '',
-      grade:        profile.grade        || '',
-      subjects:     profile.subjects     || [],
+      email: profile.email || '',
+      displayName: profile.displayName || '',
+      firstName: profile.firstName || '',
+      role: profile.role,
+      schoolName: profile.schoolName || '',
+      grade: profile.grade || '',
+      subjects: profile.subjects || [],
       dashboardUrl,
     }),
   })
@@ -411,19 +76,19 @@ const notifyPrincipal = (profile) => {
   if (!profile.schoolId) return;
 
   fetch('/.netlify/functions/notify-principal', {
-    method:  'POST',
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      schoolId:    profile.schoolId    || '',
-      schoolName:  profile.schoolName  || '',
-      uid:         profile.uid         || '',
-      email:       profile.email       || '',
+      schoolId: profile.schoolId || '',
+      schoolName: profile.schoolName || '',
+      uid: profile.uid || '',
+      email: profile.email || '',
       displayName: profile.displayName || '',
-      firstName:   profile.firstName   || '',
-      role:        profile.role,
-      grade:       profile.grade       || '',
-      subjects:    profile.subjects    || [],
-       photoURL:    profile.photoURL    || '', 
+      firstName: profile.firstName || '',
+      role: profile.role,
+      grade: profile.grade || '',
+      subjects: profile.subjects || [],
+      photoURL: profile.photoURL || '',
     }),
   })
     .then(r => r.json())
@@ -431,21 +96,336 @@ const notifyPrincipal = (profile) => {
     .catch(err => console.warn('[Notify Principal] Failed:', err));
 };
 
-// ── Component ──────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+// ERROR BOX
+// ══════════════════════════════════════════════════════════════════════════════
+
+function ErrorBox({ message }) {
+  if (!message) return null;
+  return (
+    <div className="bg-red-50 dark:bg-red-900/20 border border-red-200
+                    dark:border-red-800 text-red-700 dark:text-red-400
+                    text-xs rounded-xl px-4 py-3 leading-relaxed whitespace-pre-line">
+      {message}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// AUTH MODAL
+// ══════════════════════════════════════════════════════════════════════════════
+
+function AuthModal({ isOpen, onClose, onSuccess, onNeedsSetup, setStudentInfo }) {
+  const navigate = useNavigate();
+
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [captchaToken, setCaptchaToken] = useState(null);
+  const [error, setError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const captchaRef = useRef(null);
+
+  const resetForm = useCallback(() => {
+    setEmail(''); setPassword(''); setError('');
+    setCaptchaToken(null);
+    captchaRef.current?.reset();
+  }, []);
+
+  const handleClose = () => { resetForm(); onClose(); };
+  const toggleMode = () => { setIsRegistering(v => !v); setError(''); };
+
+  // ── Route existing users after sign-in ─────────────────────────────────
+  const routeExistingUser = async (uid) => {
+    const userSnap = await getDoc(doc(db, 'users', uid));
+    if (!userSnap.exists()) { onNeedsSetup?.(uid, email); return; }
+
+    const { role, schoolId } = userSnap.data();
+    const col = role === 'principal' ? 'principals'
+      : role === 'teacher' ? 'teachers'
+        : 'students';
+    const profSnap = await getDoc(doc(db, col, uid));
+
+    const profile = profSnap.exists()
+      ? { ...profSnap.data(), role, schoolId, uid }
+      : { role, schoolId, uid };
+
+    if (role === 'student') {
+      setStudentInfo?.(profile);
+      localStorage.setItem('user-session', JSON.stringify(profile));
+    }
+
+    resetForm();
+
+    // ── Check approval status ──────────────────────────────────────────────
+    const isDeclined = profile.approvalStatus === 'declined';
+    const isPending = role !== 'principal'
+      && profile.approvalStatus == null;  // no field = not yet reviewed
+
+    if (isDeclined) {
+      onClose();
+      await Swal.fire({
+        icon: 'error',
+        title: 'Access Declined',
+        html: `
+          <p>Your registration has been declined by the school principal.</p>
+          <p style="font-size:13px;color:#6b7280;margin-top:8px">
+            Contact your school admin or email
+            <a href="mailto:support@eduket.tech">support@eduket.tech</a>
+            if you believe this is a mistake.
+          </p>
+        `,
+        confirmButtonColor: '#4F46E5',
+        confirmButtonText: 'OK',
+      });
+      await signOut(auth);
+      return;
+    }
+
+    if (isPending) {
+      onClose();
+      navigate('/pending-approval');
+      return;
+    }
+
+    onSuccess?.(profile);
+  };
+
+  // ── Email sign-in / register ───────────────────────────────────────────
+  const handleEmailSubmit = async (e) => {
+    e.preventDefault();
+    if (!captchaToken) {
+      setError('Please complete the security check first.');
+      return;
+    }
+    setIsSubmitting(true);
+    setError('');
+
+    try {
+      if (isRegistering) {
+        const cred = await createUserWithEmailAndPassword(auth, email, password);
+        resetForm();
+        onClose();
+        onNeedsSetup?.(cred.user.uid, cred.user.email);
+      } else {
+        const cred = await signInWithEmailAndPassword(auth, email, password);
+        await routeExistingUser(cred.user.uid);
+      }
+    } catch (err) {
+      console.error('[Auth] Failed:', err.code, err.message);
+
+      let msg = '';
+      if (err.code === 'auth/password-does-not-meet-requirements') {
+        const match = err.message.match(/\[([^\]]+)\]/);
+        if (match) {
+          const reqs = match[1].split(',').map(r => r.trim()).join('\n• ');
+          msg = `Password does not meet requirements:\n• ${reqs}`;
+        } else {
+          msg = 'Password does not meet the required security standards.';
+        }
+      } else {
+        msg = getFriendlyError(err.code) || err.message || 'Something went wrong.';
+      }
+
+      setError(msg);
+      setCaptchaToken(null);
+      captchaRef.current?.reset();
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // ── Google sign-in ─────────────────────────────────────────────────────
+  const handleGoogle = async () => {
+    setError('');
+    setIsSubmitting(true);
+    try {
+      const cred = await signInWithPopup(auth, new GoogleAuthProvider());
+      const uid = cred.user.uid;
+      const snap = await getDoc(doc(db, 'users', uid));
+      if (snap.exists()) {
+        await routeExistingUser(uid);
+      } else {
+        resetForm();
+        onClose();
+        onNeedsSetup?.(uid, cred.user.email);
+      }
+    } catch (err) {
+      const msg = getFriendlyError(err.code);
+      if (msg) setError(msg);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4
+                    bg-black/60 backdrop-blur-sm">
+      <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl
+                      w-full max-w-sm border border-slate-200 dark:border-slate-800
+                      overflow-hidden">
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 pt-6 pb-4">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-xl bg-indigo-600 flex items-center
+                            justify-center">
+              <Shield size={16} className="text-white" />
+            </div>
+            <span className="font-black text-slate-800 dark:text-white">
+              {isRegistering ? 'Create account' : 'Sign in'}
+            </span>
+          </div>
+          <button onClick={handleClose}
+            className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
+            <XIcon size={20} />
+          </button>
+        </div>
+
+        <div className="px-6 pb-6 space-y-3">
+          <ErrorBox message={error} />
+
+          {/* Google button */}
+          <button
+            onClick={handleGoogle}
+            disabled={isSubmitting}
+            className="w-full flex items-center justify-center gap-3 py-3
+                       border border-slate-200 dark:border-slate-700
+                       rounded-2xl text-sm font-bold text-slate-700 dark:text-slate-300
+                       hover:bg-slate-50 dark:hover:bg-slate-800
+                       disabled:opacity-50 transition-colors"
+          >
+            <svg width="18" height="18" viewBox="0 0 18 18">
+              <path fill="#4285F4" d="M16.51 8H8.98v3h4.3c-.18 1-.74 1.48-1.6 2.04v2.01h2.6a7.8 7.8 0 0 0 2.38-5.88c0-.57-.05-.66-.15-1.18z" />
+              <path fill="#34A853" d="M8.98 17c2.16 0 3.97-.72 5.3-1.94l-2.6-2a4.8 4.8 0 0 1-7.18-2.54H1.83v2.07A8 8 0 0 0 8.98 17z" />
+              <path fill="#FBBC05" d="M4.5 10.52a4.8 4.8 0 0 1 0-3.04V5.41H1.83a8 8 0 0 0 0 7.18z" />
+              <path fill="#EA4335" d="M8.98 4.18c1.17 0 2.23.4 3.06 1.2l2.3-2.3A8 8 0 0 0 1.83 5.4L4.5 7.49a4.77 4.77 0 0 1 4.48-3.3z" />
+            </svg>
+            Continue with Google
+          </button>
+
+          <div className="flex items-center gap-3">
+            <div className="flex-1 h-px bg-slate-200 dark:bg-slate-700" />
+            <span className="text-xs text-slate-400">or</span>
+            <div className="flex-1 h-px bg-slate-200 dark:bg-slate-700" />
+          </div>
+
+          {/* Email form */}
+          <form onSubmit={handleEmailSubmit} className="space-y-3">
+            <div>
+              <label className="text-[10px] font-black text-slate-500 uppercase
+                                tracking-widest block mb-1.5">
+                Email
+              </label>
+              <input
+                type="email" value={email} required
+                onChange={e => setEmail(e.target.value)}
+                placeholder="you@school.edu"
+                className="w-full px-4 py-3 rounded-2xl border border-slate-200
+                           dark:border-slate-700 bg-white dark:bg-slate-800
+                           text-sm outline-none focus:border-indigo-500
+                           dark:text-white transition-colors"
+              />
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black text-slate-500 uppercase
+                                tracking-widest block mb-1.5">
+                Password
+              </label>
+              <div className="relative">
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  value={password} required
+                  onChange={e => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                  className="w-full px-4 py-3 pr-11 rounded-2xl border border-slate-200
+                             dark:border-slate-700 bg-white dark:bg-slate-800
+                             text-sm outline-none focus:border-indigo-500
+                             dark:text-white transition-colors"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(v => !v)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2
+                             text-slate-400 hover:text-slate-600"
+                >
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+              </div>
+              {isRegistering && (
+                <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
+                  Must include uppercase, lowercase, number and special character
+                </p>
+              )}
+            </div>
+
+            {/* ReCAPTCHA */}
+            <div className="flex justify-center">
+              <ReCAPTCHA
+                ref={captchaRef}
+                sitekey={import.meta.env.VITE_RECAPTCHA_SITE_KEY_V2}
+                onChange={token => setCaptchaToken(token)}
+                onExpired={() => setCaptchaToken(null)}
+                theme="light"
+                size="normal"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={isSubmitting || !captchaToken}
+              className="w-full py-3 bg-indigo-600 hover:bg-indigo-700
+                         disabled:opacity-50 text-white font-black rounded-2xl
+                         text-sm transition-colors flex items-center justify-center gap-2"
+            >
+              {isSubmitting ? (
+                <div className="w-4 h-4 border-2 border-white
+                                border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <Lock size={14} />
+              )}
+              {isRegistering ? 'Create Account' : 'Sign In'}
+            </button>
+          </form>
+
+          <button
+            onClick={toggleMode}
+            className="w-full text-xs text-slate-500 hover:text-indigo-600
+                       dark:hover:text-indigo-400 font-bold py-1 transition-colors"
+          >
+            {isRegistering
+              ? 'Already have an account? Sign in'
+              : "Don't have an account? Register"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PASSWORD PAGE (Landing)
+// ══════════════════════════════════════════════════════════════════════════════
 
 export default function PasswordPage({ setStudentInfo, userProfile }) {
   const navigate = useNavigate();
 
-  const [modalOpen,    setModalOpen]    = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
   const [setupPending, setSetupPending] = useState(false);
-  const [newUserUid,   setNewUserUid]   = useState('');
+  const [newUserUid, setNewUserUid] = useState('');
   const [newUserEmail, setNewUserEmail] = useState('');
 
+  // ── Auth callbacks ─────────────────────────────────────────────────────
   const handleAuthSuccess = (profile) => {
     setModalOpen(false);
     if (!profile) return;
-    if (profile.role === 'teacher')   return navigate('/teacher-dashboard');
+    if (profile.role === 'teacher') return navigate('/teacher-dashboard');
     if (profile.role === 'principal') return navigate('/principal-dashboard');
+    // Students handled by routeExistingUser → /exam
   };
 
   const handleNeedsSetup = (uid, email) => {
@@ -455,6 +435,7 @@ export default function PasswordPage({ setStudentInfo, userProfile }) {
     setSetupPending(true);
   };
 
+  // ── After wizard completes ─────────────────────────────────────────────
   const handleSetupComplete = async (profile) => {
     setSetupPending(false);
     if (!profile) return;
@@ -462,57 +443,25 @@ export default function PasswordPage({ setStudentInfo, userProfile }) {
     try {
       const dashboardUrls = {
         principal: `${window.location.origin}/principal-dashboard`,
-        teacher:   `${window.location.origin}/teacher-dashboard`,
-        student:   `${window.location.origin}/exam`,
+        teacher: `${window.location.origin}/teacher-dashboard`,
+        student: `${window.location.origin}/exam`,
       };
 
-      // Send welcome email via Netlify Function (fire and forget)
-      sendWelcomeEmail(profile, dashboardUrls[profile.role] || window.location.origin);
+      // Send welcome email (fire and forget)
+      sendWelcomeEmail(
+        profile,
+        dashboardUrls[profile.role] || window.location.origin
+      );
 
-      // Notify principal via Netlify Function (fire and forget)
+      // Notify principal (fire and forget) — teachers and students only
       notifyPrincipal(profile);
 
-      // Navigate and show success
-      if (profile.role === 'student') {
-        setStudentInfo?.(profile);
-        localStorage.setItem('user-session', JSON.stringify(profile));
-
+      if (profile.role === 'principal') {
+        // Principals are auto-approved — go straight to dashboard
         await Swal.fire({
-          icon:  'success',
-          title: 'Welcome to Eduket OS! 🎉',
-          html:  `
-            <p style="margin-bottom:8px">Your student profile is ready.</p>
-            <p style="font-size:13px;color:#6b7280">
-              📧 A welcome email has been sent to<br/>
-              <strong>${profile.email}</strong>
-            </p>
-          `,
-          confirmButtonText:  'Go to My Exams',
-          confirmButtonColor: '#1d4ed8',
-        });
-        window.location.href = '/exam';
-
-      } else if (profile.role === 'teacher') {
-        await Swal.fire({
-          icon:  'success',
-          title: 'Welcome, Teacher! 📚',
-          html:  `
-            <p style="margin-bottom:8px">Your profile is set up.</p>
-            <p style="font-size:13px;color:#6b7280">
-              📧 A welcome email has been sent to<br/>
-              <strong>${profile.email}</strong>
-            </p>
-          `,
-          confirmButtonText:  'Go to Dashboard',
-          confirmButtonColor: '#059669',
-        });
-        window.location.href = '/teacher-dashboard';
-
-      } else if (profile.role === 'principal') {
-        await Swal.fire({
-          icon:  'success',
+          icon: 'success',
           title: 'School Registered! 🏫',
-          html:  `
+          html: `
             <p style="margin-bottom:8px">
               <strong>${profile.schoolName}</strong> is now live on Eduket OS.
             </p>
@@ -521,10 +470,30 @@ export default function PasswordPage({ setStudentInfo, userProfile }) {
               <strong>${profile.email}</strong>
             </p>
           `,
-          confirmButtonText:  'Go to Dashboard',
+          confirmButtonText: 'Go to Dashboard',
           confirmButtonColor: '#7c3aed',
         });
         window.location.href = '/principal-dashboard';
+
+      } else {
+        // Teachers and students must wait for principal approval
+        // Do NOT set studentInfo or localStorage — only after approval
+        await Swal.fire({
+          icon: 'success',
+          title: 'Registration Complete! ✅',
+          html: `
+            <p style="margin-bottom:8px">
+              Your ${profile.role} profile has been created successfully.
+            </p>
+            <p style="font-size:13px;color:#6b7280">
+              📧 A welcome email has been sent to <strong>${profile.email}</strong><br/>
+              ⏳ Your principal has been notified and will approve your access shortly.
+            </p>
+          `,
+          confirmButtonText: 'OK',
+          confirmButtonColor: '#1d4ed8',
+        });
+        window.location.href = '/pending-approval';
       }
 
     } catch (err) {
@@ -532,9 +501,10 @@ export default function PasswordPage({ setStudentInfo, userProfile }) {
     }
   };
 
+  // ── Navigation helpers ─────────────────────────────────────────────────
   const handleDashboard = () => {
     if (!userProfile) { setModalOpen(true); return; }
-    if (userProfile.role === 'teacher')   return navigate('/teacher-dashboard');
+    if (userProfile.role === 'teacher') return navigate('/teacher-dashboard');
     if (userProfile.role === 'principal') return navigate('/principal-dashboard');
     navigate('/exam');
   };
@@ -549,6 +519,7 @@ export default function PasswordPage({ setStudentInfo, userProfile }) {
     }
   };
 
+  // ── Render ─────────────────────────────────────────────────────────────
   return (
     <>
       <AuthModal
@@ -579,14 +550,14 @@ export default function PasswordPage({ setStudentInfo, userProfile }) {
       />
 
       <div className="min-h-screen bg-[#0A0D14]">
-        <Hero     onOpenModal={() => setModalOpen(true)} />
+        <Hero onOpenModal={() => setModalOpen(true)} />
         <FeatureStrip />
         <VideoSection onOpenModal={() => setModalOpen(true)} />
         <Demosection />
         <HowItWorks />
         <CTA />
         <ThreePaths onOpenModal={() => setModalOpen(true)} />
-        <Mission  onOpenModal={() => setModalOpen(true)} />
+        <Mission onOpenModal={() => setModalOpen(true)} />
         <Footer />
       </div>
     </>
