@@ -36,6 +36,7 @@ import autoTable from 'jspdf-autotable';
 import { onSnapshot, collection, getDocs, query, where } from 'firebase/firestore';
 import { ActivityFeed } from './ActivityFeed';
 import TeachersTab from './TeachersTab';
+import ExportShareMenu from '../utils/ExportShareMenu';
 
 
 
@@ -650,8 +651,72 @@ export default function PrincipalDashboard({ principal }) {
         pdf.save(`${school?.name || 'report'}_${new Date().toISOString().split('T')[0]}.pdf`);
     }, [school, principal, teachers, students, exams, attempts, filteredStudents, avgScore, overallPassRate, activeTier]);
 
+
+    const buildPdf = useCallback(() => {
+        const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+        pdf.setFontSize(18);
+        pdf.setTextColor(40, 40, 40);
+        pdf.text(school?.name || 'School Report', 20, 20);
+        pdf.setFontSize(10);
+        pdf.setTextColor(100, 100, 100);
+        pdf.text(`Generated: ${new Date().toLocaleDateString('en-ZA')}`, 20, 27);
+        pdf.text(`Principal: ${principal?.title || ''} ${principal?.name || ''} ${principal?.surname || ''}`, 20, 33);
+        pdf.text(`Plan: ${TIER_VISUAL[activeTier]?.label || activeTier}`, 20, 39);
+
+        let y = 48;
+        autoTable(pdf, {
+            startY: y,
+            head: [['Metric', 'Value']],
+            body: [
+                ['Total Teachers', teachers.length],
+                ['Total Students', students.length],
+                ['Exams Uploaded', exams.length],
+                ['Avg Score', avgScore != null ? `${avgScore}%` : '—'],
+                ['Pass Rate', `${overallPassRate}%`],
+            ],
+            styles: { fontSize: 9 },
+            headStyles: { fillColor: [79, 70, 229] },
+        });
+        y = pdf.lastAutoTable.finalY + 10;
+
+        autoTable(pdf, {
+            startY: y,
+            head: [['Name', 'Surname', 'Grade', 'Subjects', 'Avg Score']],
+            body: filteredStudents.map(s => {
+                const atts = studentAttempts(s.uid);
+                return [s.name, s.surname, s.grade,
+                (s.subjects || []).slice(0, 3).join(', '),
+                averageScore(atts) != null ? `${averageScore(atts)}%` : '—'];
+            }),
+            styles: { fontSize: 8 },
+            headStyles: { fillColor: [79, 70, 229] },
+        });
+
+        pdf.save(`${school?.name || 'report'}_${new Date().toISOString().split('T')[0]}.pdf`);
+    }, [school, principal, teachers, students, exams, attempts, filteredStudents, avgScore, overallPassRate, activeTier]);
+
+    const summaryText = useMemo(() => (
+        `${school?.name || 'School'} — Report ${new Date().toLocaleDateString('en-ZA')}\n` +
+        `Teachers: ${teachers.length} · Students: ${students.length} · Exams: ${exams.length}\n` +
+        `Average: ${avgScore != null ? avgScore + '%' : '—'} · Pass rate: ${overallPassRate}%`
+    ), [school, teachers.length, students.length, exams.length, avgScore, overallPassRate]);
+
     const handlePrint = () => window.print();
     const handleSignOut = async () => { await signOut(auth); navigate('/'); };
+
+    const emailReport = async (blob, name) => {
+        const b64 = await new Promise(res => {
+            const r = new FileReader();
+            r.onload = () => res(r.result.split(',')[1]);
+            r.readAsDataURL(blob);
+        });
+        const res = await fetch('/.netlify/functions/send-report', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ to: principal?.email, fileName: name, pdfBase64: b64, summary: summaryText }),
+        });
+        if (!res.ok) throw new Error('Failed to send report');
+    };
 
     // ── TABS CONFIG ───────────────────────────────────────────────────────────
     const tabs = [
@@ -865,21 +930,14 @@ export default function PrincipalDashboard({ principal }) {
                         {limits.anyBlocked ? 'Limit reached' : limits.anyWarning ? 'Near limit' : TIER_VISUAL[activeTier]?.label}
                     </div>
 
-                    <button
-                        onClick={exportPDF}
-                        className="hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-xl text-[10px] text-white bg-black font-black border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800"
-                    >
-                        <Download size={12} /> Export
-                    </button>
-                    <button
-                        onClick={handlePrint}
-                        className="hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-xl text-[10px] font-black text-white bg-black border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800"
-                    >
-                        <Printer size={12} /> Print
-                    </button>
-                    <button onClick={exportPDF} className="sm:hidden text-slate-400 hover:text-slate-600">
-                        <Download size={18} />
-                    </button>
+                    {/* Export and share button for principal */}
+                    <ExportShareMenu
+                        buildPdf={buildPdf}
+                        fileName={school?.name || 'report'}
+                        summaryText={summaryText}
+                        onEmailReport={emailReport}
+                        primary={primary}
+                    />
                 </header>
 
                 {/* Page content */}
