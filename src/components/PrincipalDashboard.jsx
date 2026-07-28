@@ -11,7 +11,7 @@ import { useNavigate } from 'react-router-dom';
 import { signOut } from 'firebase/auth';
 import { auth, db } from '../utils/firebase';
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { createPortal } from 'react-dom';
 import { useUser } from '../contexts/UserContext';
 
@@ -20,7 +20,7 @@ import {
     ChevronDown, ChevronRight, Filter, Download, Printer, LogOut,
     Search, X, Eye, BarChart2, CheckCircle2, Clock, RefreshCw,
     School, Settings, Moon, Sun, Menu, Zap, Lock, ArrowUpRight,
-    Sparkles, Crown, Star, CreditCard, ChevronLeft, Shield
+    Sparkles, Crown, Star, CreditCard, ChevronLeft, Shield, GraduationCap
 } from 'lucide-react';
 import PaymentManager from './PaymentManager';
 import SubscriptionManager from './SubscriptionManager';
@@ -35,6 +35,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { onSnapshot, collection, getDocs, query, where } from 'firebase/firestore';
 import { ActivityFeed } from './ActivityFeed';
+import TeachersTab from './TeachersTab';
 
 
 
@@ -363,18 +364,23 @@ function MobileDrawer({ open, onClose, children }) {
 
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 export default function PrincipalDashboard({ principal }) {
+    // ─── 1. CONTEXT & ROUTER ──────────────────────────────────────────────
     const navigate = useNavigate();
     const { school } = useSchool();
+    const { user, userRole, loading } = useUser();
     const primary = school?.primary || '#4f46e5';
+    const printRef = useRef();
 
-    const [bannerDismissed, setBannerDismissed] = useState(false);
-
+    // ─── 2. ALL STATE ─────────────────────────────────────────────────────
     // Data
     const [teachers, setTeachers] = useState([]);
     const [students, setStudents] = useState([]);
     const [exams, setExams] = useState([]);
     const [attempts, setAttempts] = useState([]);
     const [auditLog, setAuditLog] = useState([]);
+    const [selectedSchoolDoc, setSelectedSchoolDoc] = useState(null);
+    const [teacherReviews, setTeacherReviews] = useState({});
+    const [authToken, setAuthToken] = useState(null);
 
     // UI
     const [activeTab, setActiveTab] = useState('overview');
@@ -382,6 +388,12 @@ export default function PrincipalDashboard({ principal }) {
     const [sidebarOpen, setSidebarOpen] = useState(true);
     const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
     const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+    const [bannerDismissed, setBannerDismissed] = useState(false);
+
+    // Collapsible sections
+    const [gradeOpen, setGradeOpen] = useState(true);
+    const [subjectOpen, setSubjectOpen] = useState(true);
+    const [activityOpen, setActivityOpen] = useState(true);
 
     // Filters
     const [filterGrade, setFilterGrade] = useState('All');
@@ -393,47 +405,179 @@ export default function PrincipalDashboard({ principal }) {
     const [selectedStudent, setSelectedStudent] = useState(null);
     const [selectedExam, setSelectedExam] = useState(null);
 
-    const schoolId = principal?.schoolId || principal?.uid;
-    const printRef = useRef();
+    // ─── 3. SCHOOL ID — needs selectedSchoolDoc + school ───────────────────
+    const schoolId = useMemo(() => {
+        const id =
+            principal?.schoolId ||
+            selectedSchoolDoc?.id ||
+            school?.id ||
+            null;
 
-    // UI state for collapsible sections
-    const [gradeOpen, setGradeOpen] = useState(true);
-    const [subjectOpen, setSubjectOpen] = useState(true);
-    const [activityOpen, setActivityOpen] = useState(true);
+        if (!id) {
+            console.warn('[PrincipalDashboard] No schoolId resolved.', {
+                principalSchoolId: principal?.schoolId,
+                selectedSchoolDoc: selectedSchoolDoc?.id,
+                contextSchool: school?.id,
+            });
+        } else if (school?.id && id !== school.id) {
+            console.warn('[PrincipalDashboard] schoolId mismatch:', id, 'vs context', school.id);
+        }
+
+        return id;
+    }, [principal?.schoolId, selectedSchoolDoc?.id, school?.id]);
 
 
+    // ── Derived ───────────────────────────────────────────────────────────────
 
-    // ── Live usage object — drives ALL limit checks ───────────────────────────
+    const schoolAttempts = attempts;   // already scoped by the query
+
+    const avgScore = useMemo(() => averageScore(schoolAttempts), [schoolAttempts]);
+    const overallPassRate = useMemo(() => passRate(schoolAttempts), [schoolAttempts]);
+    const subjectGroups = useMemo(() => groupBySubject(schoolAttempts), [schoolAttempts]);
+    const gradeCounts = useMemo(() => countByGrade(students), [students]);
+
+    const allSubjects = useMemo(
+        () => [...new Set(students.flatMap(s => s.subjects || []))].sort(),
+        [students]
+    );
+
+    // Index attempts by student once, instead of scanning the full array per row.
+    const attemptsByStudent = useMemo(() => {
+        const map = new Map();
+        for (const a of schoolAttempts) {
+            for (const key of [a.studentUid, a.studentId]) {
+                if (!key) continue;
+                if (!map.has(key)) map.set(key, []);
+                if (!map.get(key).includes(a)) map.get(key).push(a);
+            }
+        }
+        return map;
+    }, [schoolAttempts]);
+
+    const studentAttempts = useCallback(
+        (uid) => attemptsByStudent.get(uid) || [],
+        [attemptsByStudent]
+    );
+
+    const filteredStudents = useMemo(() => students.filter(s => {
+        const matchGrade = filterGrade === 'All' || s.grade === filterGrade;
+        const matchSubject = filterSubject === 'All' || (s.subjects || []).includes(filterSubject);
+        const matchSearch = !search ||
+            `${s.name} ${s.surname}`.toLowerCase().includes(search.toLowerCase()) ||
+            s.email?.toLowerCase().includes(search.toLowerCase());
+        return matchGrade && matchSubject && matchSearch;
+    }), [students, filterGrade, filterSubject, search]);
+
+
+    // ─── 4. USAGE — needs the data arrays ─────────────────────────────────
     const usage = useMemo(() => ({
         students: students.length,
         exams: exams.length,
         teachers: teachers.length,
     }), [students.length, exams.length, teachers.length]);
 
-    // ── Limit status — single hook, used everywhere ───────────────────────────
+    // ─── 5. TIER — needs schoolId, then usage ─────────────────────────────
     const { tier: activeTier, loading: tierLoading } = useActiveTier(schoolId);
-    const tierConfig = getTierConfig(activeTier);  // ← single reference
+    const tierConfig = getTierConfig(activeTier);
     const limits = useLimitStatus(activeTier, usage);
 
-    const { userRole, loading } = useUser();
-    const { user } = useUser();
-    const [selectedSchoolDoc, setSelectedSchoolDoc] = useState(null);
-    const [authToken, setAuthToken] = useState(null);
+    useEffect(() => {
+        if (!schoolId) return;
+
+        const state = { unsubs: [], active: true };
+
+        const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+            if (!state.active) return;
+
+            if (!user) {
+                setAttempts([]);
+                setTeachers([]);
+                setStudents([]);
+                setExams([]);
+                setAuditLog([]);
+                return;
+            }
+
+            const attemptsQuery = query(
+                collection(db, 'exam_attempts'),
+                where('schoolId', '==', schoolId)
+            );
+
+            state.unsubs = [
+                // Live, so a submitted exam updates every stat immediately.
+                onSnapshot(
+                    attemptsQuery,
+                    (snap) => {
+                        if (!state.active) return;
+                        setAttempts(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+                    },
+                    (err) => console.error('[attempts listener]', err)
+                ),
+                subscribeToSchoolTeachers(schoolId, setTeachers),
+                subscribeToSchoolStudents(schoolId, setStudents),
+                subscribeToSchoolExams(schoolId, setExams),
+                subscribeToAuditLog(schoolId, setAuditLog),
+            ];
+        });
+
+        return () => {
+            state.active = false;
+            unsubscribeAuth();
+            state.unsubs.forEach(u => typeof u === 'function' && u());
+        };
+    }, [schoolId]);
+
+    // TEACHER REVIEWS BY PRINCIPAL
+    useEffect(() => {
+        if (!school?.id) return;
+        const q = query(collection(db, 'teacherReviews'), where('schoolId', '==', school.id));
+        const unsub = onSnapshot(q, snap => {
+            const map = {};
+            snap.forEach(d => {
+                const r = d.data();
+                map[`${r.teacherId}::${r.subject}`] = { rating: r.rating, notes: r.notes };
+            });
+            setTeacherReviews(map);
+        }, err => console.error('teacherReviews listener:', err));
+        return () => unsub();
+    }, [school?.id]);
+
+    const handleSaveAssessment = async (teacherId, subject, draft) => {
+        const user = auth.currentUser;
+        if (!user) throw new Error("Not authenticated");
+
+        // Construct the document ID deterministically
+        const reviewId = `${teacherId}_${subject.replace(/[^a-zA-Z0-9]/g, '_')}`;
+        const reviewRef = doc(db, 'teacherReviews', reviewId);
+
+        const reviewPayload = {
+            schoolId: schoolId,                   // string - must match principal's school
+            teacherId: String(teacherId),          // string
+            subject: String(subject),              // string
+            rating: Number(draft.rating || 0),     // number (0 to 5)
+            notes: String(draft.notes || '').slice(0, 2000), // string (<= 2000 chars)
+            reviewedBy: user.uid,                  // string (must match request.auth.uid)
+            updatedAt: serverTimestamp()           // timestamp
+        };
+
+        // Make sure no undefined or extra keys exist
+        await setDoc(reviewRef, reviewPayload, { merge: true });
+    };
 
 
 
-useEffect(() => {
-  const auth = getAuth();
-  const unsub = onAuthStateChanged(auth, async (user) => {
-    if (user) {
-      const token = await user.getIdToken();
-      setAuthToken(token);
-    } else {
-      setAuthToken(null);
-    }
-  });
-  return () => unsub();
-}, []);
+    useEffect(() => {
+        const auth = getAuth();
+        const unsub = onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                const token = await user.getIdToken();
+                setAuthToken(token);
+            } else {
+                setAuthToken(null);
+            }
+        });
+        return () => unsub();
+    }, []);
 
     useEffect(() => {
         const fetchSchool = async () => {
@@ -460,125 +604,6 @@ useEffect(() => {
         };
         fetchSchool();
     }, [user]);
-
-
-
-
-    useEffect(() => {
-        if (!schoolId) return;
-
-        const auth = getAuth();
-
-        // FIX 1: Use a ref-like object that cleanup can actually see
-        // (a plain object in the closure, mutated in place — closure sees the same reference)
-        const state = { unsubs: [], active: true };
-
-        const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
-            // FIX 2: If cleanup already ran before this callback fired, bail immediately
-            if (!state.active) return;
-
-            if (user) {
-                const fetchAllAttempts = async () => {
-                    try {
-                        // ── TEMP DIAGNOSTIC ──────────────────────────────────────
-                        // const myUserDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
-                        // console.log('[DIAG] my users/{uid} doc:', myUserDoc.data());
-                        // console.log('[DIAG] querying schoolId:', schoolId);
-                        // // ── END DIAGNOSTIC ───────────────────────────────────────
-
-                        const snap = await getDocs(
-                            query(collection(db, 'exam_attempts'), where('schoolId', '==', schoolId))
-                        );
-                        if (!state.active) return;
-                        const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-                        setAttempts(all);
-                    } catch (e) {
-                        if (state.active) console.error('[fetchAttempts]', e);
-                    }
-                };
-                fetchAllAttempts();
-
-                // FIX 4: Write into state.unsubs — cleanup closure sees this object
-                state.unsubs = [
-                    subscribeToSchoolTeachers(schoolId, setTeachers),
-                    subscribeToSchoolStudents(schoolId, setStudents),
-                    subscribeToSchoolExams(schoolId, setExams),
-                    subscribeToAuditLog(schoolId, setAuditLog),
-                ];
-            } else {
-                setAttempts([]);
-                setTeachers([]);
-                setStudents([]);
-                setExams([]);
-                setAuditLog([]);
-            }
-        });
-
-        return () => {
-            // FIX 5: Mark inactive first — stops any in-flight async callbacks
-            state.active = false;
-            unsubscribeAuth();
-            // Now state.unsubs actually contains the listeners (if auth fired in time)
-            state.unsubs.forEach(u => typeof u === 'function' && u());
-        };
-    }, [schoolId]);
-
-    // ── Derived ───────────────────────────────────────────────────────────────
-    const schoolAttempts = attempts.filter(a => a.schoolId === schoolId);
-
-    const gradeCounts = countByGrade(students);
-    const avgScore = averageScore(schoolAttempts);
-    const overallPassRate = passRate(schoolAttempts);
-    const subjectGroups = groupBySubject(schoolAttempts);
-    const allSubjects = [...new Set(students.flatMap(s => s.subjects || []))].sort();
-
-    const filteredStudents = students.filter(s => {
-        const matchGrade = filterGrade === 'All' || s.grade === filterGrade;
-        const matchSubject = filterSubject === 'All' || (s.subjects || []).includes(filterSubject);
-        const matchSearch = !search ||
-            `${s.name} ${s.surname}`.toLowerCase().includes(search.toLowerCase()) ||
-            s.email?.toLowerCase().includes(search.toLowerCase());
-        return matchGrade && matchSubject && matchSearch;
-    });
-
-    const studentAttempts = (uid) =>
-        schoolAttempts.filter(
-            (a) => a.studentUid === uid || a.studentId === uid
-        );
-
-    const examAttempts = (exam) => {
-        // exam can be either the full object or just an id string
-        const examObj = typeof exam === 'string' ? { id: exam } : exam;
-        const id = examObj.id;
-        const customId = examObj.examId;   // the field set during upload
-
-        return schoolAttempts.filter(a => {
-            // Never match undefined === undefined — always require a real value
-            if (!a.examId && !a.sourceUploadId && !a.exam_id) return false;
-
-            return (
-                (a.examId && (a.examId === id || a.examId === customId)) ||
-                (a.sourceUploadId && (a.sourceUploadId === id || a.sourceUploadId === customId)) ||
-                (a.exam_id && (a.exam_id === id || a.exam_id === customId))
-            );
-        });
-    };
-
-    // Add this tracer in your Principal Dashboard
-    // console.log("--- Dashboard Data Audit ---");
-    // console.log("Total raw attempts fetched:", schoolAttempts.length);
-    // console.log("Filtered school attempts:", schoolAttempts.length);
-
-    filteredStudents.forEach(s => {
-        const teacherViewAttempts = studentAttempts(s.uid);
-        const principalViewAttempts = studentAttempts(s.uid);
-
-        if (teacherViewAttempts.length !== principalViewAttempts.length) {
-            console.warn(`Mismatch for ${s.name}: Teacher=${teacherViewAttempts.length}, Principal=${principalViewAttempts.length}`);
-        }
-    });
-
-
 
     const handleUpgrade = useCallback(() => setShowUpgradeModal(true), []);
 
@@ -631,6 +656,7 @@ useEffect(() => {
     // ── TABS CONFIG ───────────────────────────────────────────────────────────
     const tabs = [
         { id: 'overview', label: 'Overview', icon: BarChart2 },
+        { id: 'teachers', label: 'Teachers', icon: GraduationCap },
         { id: 'students', label: 'Students', icon: Users },
         { id: 'exams', label: 'Exams', icon: FileText },
         {
@@ -883,12 +909,12 @@ useEffect(() => {
 
                             </div>
 
-                    
-{/* For new users approval */}
+
+                            {/* For new users approval */}
                             <ActivityFeed
-                            schoolId={selectedSchoolDoc?.schoolId || principal?.schoolId}
-                            apiUrl={import.meta.env.VITE_API_URL}
-                            authToken={authToken} 
+                                schoolId={selectedSchoolDoc?.schoolId || principal?.schoolId}
+                                apiUrl={import.meta.env.VITE_API_URL}
+                                authToken={authToken}
                             />
 
 
@@ -896,258 +922,277 @@ useEffect(() => {
                             <div className="bg-white dark:bg-slate-800 rounded-2xl border
                 border-slate-100 dark:border-slate-700 overflow-hidden">
 
-    {/* Header — clickable to collapse */}
-    <button
-        onClick={() => setGradeOpen(v => !v)}
-        className="w-full flex justify-between items-center p-5
+                                {/* Header — clickable to collapse */}
+                                <button
+                                    onClick={() => setGradeOpen(v => !v)}
+                                    className="w-full flex justify-between items-center p-5
                    hover:bg-slate-50 dark:hover:bg-slate-700/50
                    transition-colors cursor-pointer"
-    >
-        <h2 className="text-sm font-black text-slate-700 dark:text-white">
-            Students per Grade
-        </h2>
-        <div className="flex items-center gap-2">
-            <span className="text-[10px] font-bold px-2.5 py-1 rounded-full
+                                >
+                                    <h2 className="text-sm font-black text-slate-700 dark:text-white">
+                                        Students per Grade
+                                    </h2>
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-[10px] font-bold px-2.5 py-1 rounded-full
                              bg-slate-100 dark:bg-slate-700
                              text-slate-500 dark:text-slate-300">
-                {currentCurriculum}
-            </span>
-            <svg
-                className={`w-4 h-4 text-slate-400 transition-transform duration-200
+                                            {currentCurriculum}
+                                        </span>
+                                        <svg
+                                            className={`w-4 h-4 text-slate-400 transition-transform duration-200
                             ${gradeOpen ? '' : 'rotate-180'}`}
-                fill="none" viewBox="0 0 24 24" stroke="currentColor"
-            >
-                <path strokeLinecap="round" strokeLinejoin="round"
-                      strokeWidth={2} d="M5 15l7-7 7 7" />
-            </svg>
-        </div>
-    </button>
+                                            fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                                        >
+                                            <path strokeLinecap="round" strokeLinejoin="round"
+                                                strokeWidth={2} d="M5 15l7-7 7 7" />
+                                        </svg>
+                                    </div>
+                                </button>
 
-    {/* Collapsible content */}
-    {gradeOpen && (
-        <div className="px-5 pb-5 border-t border-slate-100 dark:border-slate-700">
-            {dynamicGradeOrder.length === 0 ? (
-                <div className="h-28 flex items-center justify-center
+                                {/* Collapsible content */}
+                                {gradeOpen && (
+                                    <div className="px-5 pb-5 border-t border-slate-100 dark:border-slate-700">
+                                        {dynamicGradeOrder.length === 0 ? (
+                                            <div className="h-28 flex items-center justify-center
                                 border border-dashed border-slate-200
                                 dark:border-slate-700 rounded-xl mt-4">
-                    <p className="text-xs font-medium text-slate-400">
-                        No student enrollment records found
-                    </p>
-                </div>
-            ) : (
-                /* Scrollable bar chart — handles many grades gracefully */
-                <div className="overflow-x-auto mt-4">
-                    <div
-                        className="flex items-end gap-2 h-28 pt-4"
-                        style={{
-                            minWidth: `${dynamicGradeOrder.length * 48}px`
-                        }}
-                    >
-                        {dynamicGradeOrder.map(g => {
-                            const count = activeGradeCounts[g] || 0;
-                            const max   = Math.max(
-                                ...dynamicGradeOrder.map(gr => activeGradeCounts[gr] || 0),
-                                1
-                            );
-                            const pct  = (count / max) * 100;
-                            const displayLabel = g
-                                .replace('Grade ', 'Gr ')
-                                .replace('Year ',  'Yr ')
-                                .replace('Form ',  'Fm ');
+                                                <p className="text-xs font-medium text-slate-400">
+                                                    No student enrollment records found
+                                                </p>
+                                            </div>
+                                        ) : (
+                                            /* Scrollable bar chart — handles many grades gracefully */
+                                            <div className="overflow-x-auto mt-4">
+                                                <div
+                                                    className="flex items-end gap-2 h-28 pt-4"
+                                                    style={{
+                                                        minWidth: `${dynamicGradeOrder.length * 48}px`
+                                                    }}
+                                                >
+                                                    {dynamicGradeOrder.map(g => {
+                                                        const count = activeGradeCounts[g] || 0;
+                                                        const max = Math.max(
+                                                            ...dynamicGradeOrder.map(gr => activeGradeCounts[gr] || 0),
+                                                            1
+                                                        );
+                                                        const pct = (count / max) * 100;
+                                                        const displayLabel = g
+                                                            .replace('Grade ', 'Gr ')
+                                                            .replace('Year ', 'Yr ')
+                                                            .replace('Form ', 'Fm ');
 
-                            return (
-                                <div key={g}
-                                     className="flex flex-col items-center gap-1"
-                                     style={{ minWidth: 40 }}>
-                                    <span className="text-[10px] font-black
+                                                        return (
+                                                            <div key={g}
+                                                                className="flex flex-col items-center gap-1"
+                                                                style={{ minWidth: 40 }}>
+                                                                <span className="text-[10px] font-black
                                                      text-slate-600 dark:text-slate-300">
-                                        {count}
-                                    </span>
-                                    <div
-                                        className="w-full rounded-t-xl transition-all duration-700"
-                                        style={{
-                                            height:          `${pct}%`,
-                                            backgroundColor: primary || '#4f46e5',
-                                            minHeight:       count ? 6 : 0,
-                                            width:           32,
-                                        }}
-                                    />
-                                    <span className="text-[9px] text-slate-400
+                                                                    {count}
+                                                                </span>
+                                                                <div
+                                                                    className="w-full rounded-t-xl transition-all duration-700"
+                                                                    style={{
+                                                                        height: `${pct}%`,
+                                                                        backgroundColor: primary || '#4f46e5',
+                                                                        minHeight: count ? 6 : 0,
+                                                                        width: 32,
+                                                                    }}
+                                                                />
+                                                                <span className="text-[9px] text-slate-400
                                                      font-bold whitespace-nowrap">
-                                        {displayLabel}
-                                    </span>
-                                </div>
-                            );
-                        })}
-                    </div>
-                </div>
-            )}
-        </div>
-    )}
-</div>
+                                                                    {displayLabel}
+                                                                </span>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
 
                             <div className="bg-white dark:bg-slate-800 rounded-2xl border
                 border-slate-100 dark:border-slate-700 overflow-hidden">
 
-    {/* Header — clickable to collapse */}
-    <button
-        onClick={() => setSubjectOpen(v => !v)}
-        className="w-full flex justify-between items-center p-5
+                                {/* Header — clickable to collapse */}
+                                <button
+                                    onClick={() => setSubjectOpen(v => !v)}
+                                    className="w-full flex justify-between items-center p-5
                    hover:bg-slate-50 dark:hover:bg-slate-700/50
                    transition-colors cursor-pointer"
-    >
-        <h2 className="text-sm font-black text-slate-700 dark:text-white">
-            Performance by Subject
-        </h2>
-        <div className="flex items-center gap-2">
-            {Object.keys(subjectGroups).length > 0 && (
-                <span className="text-[10px] font-bold px-2.5 py-1 rounded-full
+                                >
+                                    <h2 className="text-sm font-black text-slate-700 dark:text-white">
+                                        Performance by Subject
+                                    </h2>
+                                    <div className="flex items-center gap-2">
+                                        {Object.keys(subjectGroups).length > 0 && (
+                                            <span className="text-[10px] font-bold px-2.5 py-1 rounded-full
                                  bg-slate-100 dark:bg-slate-700
                                  text-slate-500 dark:text-slate-300">
-                    {Object.keys(subjectGroups).length} subjects
-                </span>
-            )}
-            <svg
-                className={`w-4 h-4 text-slate-400 transition-transform duration-200
+                                                {Object.keys(subjectGroups).length} subjects
+                                            </span>
+                                        )}
+                                        <svg
+                                            className={`w-4 h-4 text-slate-400 transition-transform duration-200
                             ${subjectOpen ? '' : 'rotate-180'}`}
-                fill="none" viewBox="0 0 24 24" stroke="currentColor"
-            >
-                <path strokeLinecap="round" strokeLinejoin="round"
-                      strokeWidth={2} d="M5 15l7-7 7 7" />
-            </svg>
-        </div>
-    </button>
+                                            fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                                        >
+                                            <path strokeLinecap="round" strokeLinejoin="round"
+                                                strokeWidth={2} d="M5 15l7-7 7 7" />
+                                        </svg>
+                                    </div>
+                                </button>
 
-    {/* Collapsible + scrollable content */}
-    {subjectOpen && (
-        <div className="border-t border-slate-100 dark:border-slate-700">
-            {Object.keys(subjectGroups).length === 0 ? (
-                <div className="px-5 py-6 flex items-center justify-center
+                                {/* Collapsible + scrollable content */}
+                                {subjectOpen && (
+                                    <div className="border-t border-slate-100 dark:border-slate-700">
+                                        {Object.keys(subjectGroups).length === 0 ? (
+                                            <div className="px-5 py-6 flex items-center justify-center
                                 border border-dashed border-slate-200
                                 dark:border-slate-700 rounded-xl mx-5 my-4">
-                    <p className="text-xs text-slate-400">
-                        No attempts recorded yet.
-                    </p>
-                </div>
-            ) : (
-                /* Scrollable — grows with number of subjects */
-                <div className="overflow-y-auto max-h-64 px-5 py-4 space-y-3">
-                    {Object.entries(subjectGroups)
-                        .sort((a, b) => b[1].length - a[1].length)
-                        .map(([sub, atts]) => {
-                            const avg = averageScore(atts);
-                            return (
-                                <div key={sub} className="flex items-center gap-2 md:gap-3">
-                                    <span className="text-[10px] font-bold
+                                                <p className="text-xs text-slate-400">
+                                                    No attempts recorded yet.
+                                                </p>
+                                            </div>
+                                        ) : (
+                                            /* Scrollable — grows with number of subjects */
+                                            <div className="overflow-y-auto max-h-64 px-5 py-4 space-y-3">
+                                                {Object.entries(subjectGroups)
+                                                    .sort((a, b) => b[1].length - a[1].length)
+                                                    .map(([sub, atts]) => {
+                                                        const avg = averageScore(atts);
+                                                        return (
+                                                            <div key={sub} className="flex items-center gap-2 md:gap-3">
+                                                                <span className="text-[10px] font-bold
                                                      text-slate-600 dark:text-slate-300
                                                      w-28 md:w-36 truncate flex-shrink-0">
-                                        {sub}
-                                    </span>
-                                    <div className="flex-1 bg-slate-100 dark:bg-slate-700
+                                                                    {sub}
+                                                                </span>
+                                                                <div className="flex-1 bg-slate-100 dark:bg-slate-700
                                                     rounded-full h-2">
-                                        <div
-                                            className="h-2 rounded-full transition-all duration-700"
-                                            style={{
-                                                width:           `${avg || 0}%`,
-                                                backgroundColor: primary,
-                                            }}
-                                        />
-                                    </div>
-                                    <ScoreBadge score={avg} />
-                                    <span className="text-[9px] text-slate-400
+                                                                    <div
+                                                                        className="h-2 rounded-full transition-all duration-700"
+                                                                        style={{
+                                                                            width: `${avg || 0}%`,
+                                                                            backgroundColor: primary,
+                                                                        }}
+                                                                    />
+                                                                </div>
+                                                                <ScoreBadge score={avg} />
+                                                                <span className="text-[9px] text-slate-400
                                                      w-14 md:w-16 text-right flex-shrink-0">
-                                        {atts.length} att.
-                                    </span>
-                                </div>
-                            );
-                        })
-                    }
-                </div>
-            )}
-        </div>
-    )}
-</div>
+                                                                    {atts.length} att.
+                                                                </span>
+                                                            </div>
+                                                        );
+                                                    })
+                                                }
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
 
-                          <div className="bg-white dark:bg-slate-800 rounded-2xl border
+                            <div className="bg-white dark:bg-slate-800 rounded-2xl border
                 border-slate-100 dark:border-slate-700 overflow-hidden">
 
-    {/* Header — clickable to collapse */}
-    <button
-        onClick={() => setActivityOpen(v => !v)}
-        className="w-full flex justify-between items-center p-5
+                                {/* Header — clickable to collapse */}
+                                <button
+                                    onClick={() => setActivityOpen(v => !v)}
+                                    className="w-full flex justify-between items-center p-5
                    hover:bg-slate-50 dark:hover:bg-slate-700/50
                    transition-colors cursor-pointer"
-    >
-        <h2 className="text-sm font-black text-slate-700 dark:text-white">
-            Recent Activity
-        </h2>
-        <div className="flex items-center gap-2">
-            {auditLog.length > 0 && (
-                <span className="text-[10px] font-bold px-2.5 py-1 rounded-full
+                                >
+                                    <h2 className="text-sm font-black text-slate-700 dark:text-white">
+                                        Recent Activity
+                                    </h2>
+                                    <div className="flex items-center gap-2">
+                                        {auditLog.length > 0 && (
+                                            <span className="text-[10px] font-bold px-2.5 py-1 rounded-full
                                  bg-slate-100 dark:bg-slate-700
                                  text-slate-500 dark:text-slate-300">
-                    {auditLog.length} events
-                </span>
-            )}
-            <svg
-                className={`w-4 h-4 text-slate-400 transition-transform duration-200
+                                                {auditLog.length} events
+                                            </span>
+                                        )}
+                                        <svg
+                                            className={`w-4 h-4 text-slate-400 transition-transform duration-200
                             ${activityOpen ? '' : 'rotate-180'}`}
-                fill="none" viewBox="0 0 24 24" stroke="currentColor"
-            >
-                <path strokeLinecap="round" strokeLinejoin="round"
-                      strokeWidth={2} d="M5 15l7-7 7 7" />
-            </svg>
-        </div>
-    </button>
+                                            fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                                        >
+                                            <path strokeLinecap="round" strokeLinejoin="round"
+                                                strokeWidth={2} d="M5 15l7-7 7 7" />
+                                        </svg>
+                                    </div>
+                                </button>
 
-    {/* Collapsible + scrollable content */}
-    {activityOpen && (
-        <div className="border-t border-slate-100 dark:border-slate-700">
-            {auditLog.length === 0 ? (
-                <div className="px-5 py-6 flex items-center justify-center
+                                {/* Collapsible + scrollable content */}
+                                {activityOpen && (
+                                    <div className="border-t border-slate-100 dark:border-slate-700">
+                                        {auditLog.length === 0 ? (
+                                            <div className="px-5 py-6 flex items-center justify-center
                                 border border-dashed border-slate-200
                                 dark:border-slate-700 rounded-xl mx-5 my-4">
-                    <p className="text-xs text-slate-400">
-                        No activity recorded yet.
-                    </p>
-                </div>
-            ) : (
-                /* Scrollable — grows with audit log */
-                <div className="overflow-y-auto max-h-64 px-5 py-4 space-y-3">
-                    {auditLog.map(ev => (
-                        <div key={ev.id} className="flex items-start gap-3 text-xs">
-                            <div className="w-5 h-5 rounded-full bg-slate-100
+                                                <p className="text-xs text-slate-400">
+                                                    No activity recorded yet.
+                                                </p>
+                                            </div>
+                                        ) : (
+                                            /* Scrollable — grows with audit log */
+                                            <div className="overflow-y-auto max-h-64 px-5 py-4 space-y-3">
+                                                {auditLog.map(ev => (
+                                                    <div key={ev.id} className="flex items-start gap-3 text-xs">
+                                                        <div className="w-5 h-5 rounded-full bg-slate-100
                                             dark:bg-slate-700 flex items-center
                                             justify-center flex-shrink-0 mt-0.5">
-                                {ev.type === 'ai_mark'
-                                    ? <Award size={10} className="text-indigo-500" />
-                                    : ev.type === 'remark'
-                                        ? <RefreshCw size={10} className="text-amber-500" />
-                                        : <CheckCircle2 size={10} className="text-emerald-500" />
-                                }
+                                                            {ev.type === 'ai_mark'
+                                                                ? <Award size={10} className="text-indigo-500" />
+                                                                : ev.type === 'remark'
+                                                                    ? <RefreshCw size={10} className="text-amber-500" />
+                                                                    : <CheckCircle2 size={10} className="text-emerald-500" />
+                                                            }
+                                                        </div>
+                                                        <div className="flex-1 min-w-0">
+                                                            <p className="font-bold text-slate-700 dark:text-slate-200 truncate">
+                                                                {ev.description || ev.type}
+                                                            </p>
+                                                            <p className="text-slate-400 mt-0.5">
+                                                                {ev.actorName || 'System'} &middot;{' '}
+                                                                {ev.timestamp?.toDate?.().toLocaleDateString(
+                                                                    'en-ZA', {
+                                                                    day: '2-digit',
+                                                                    month: 'short',
+                                                                    year: 'numeric',
+                                                                }
+                                                                ) || '—'}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
                             </div>
-                            <div className="flex-1 min-w-0">
-                                <p className="font-bold text-slate-700 dark:text-slate-200 truncate">
-                                    {ev.description || ev.type}
-                                </p>
-                                <p className="text-slate-400 mt-0.5">
-                                    {ev.actorName || 'System'} &middot;{' '}
-                                    {ev.timestamp?.toDate?.().toLocaleDateString(
-                                        'en-ZA', {
-                                            day:   '2-digit',
-                                            month: 'short',
-                                            year:  'numeric',
-                                        }
-                                    ) || '—'}
-                                </p>
-                            </div>
-                        </div>
-                    ))}
-                </div>
-            )}
-        </div>
-    )}
-</div>
+                        </>
+                    )}
+
+
+
+                    {/* ----TEACHERS TAB------ */}
+                    {activeTab === 'teachers' && (
+                        <>
+                            <LimitAlertBanner resource="teachers" label="Teachers" info={limits.teachers} onUpgrade={handleUpgrade} />
+
+                            <TeachersTab
+                                teachers={teachers}          // users where role === 'teacher' && schoolId === school.id
+                                exams={exams}
+                                attempts={attempts}          // the same array your examAttempts() filters over
+                                students={students}
+                                targetExamsPerSubject={4}
+                                assessments={teacherReviews} // optional: { "uid::Mathematics": { rating, notes } }
+                                onSaveAssessment={handleSaveAssessment}
+                            />
                         </>
                     )}
 

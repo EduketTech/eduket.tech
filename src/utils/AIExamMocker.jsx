@@ -385,10 +385,107 @@ function InputContent({ question, savedAnswer, saveAnswer }) {
 
 
 
-// ─── ParentContext Panel ──────────────────────────────────────────────────────
-function ParentContextPanel({ context }) {
+/* ────────────────────────────────────────────────────────────
+   Normalising a passage value
+   The parser has written this field under several names and
+   shapes over time, so coerce rather than assume.
+   ──────────────────────────────────────────────────────────── */
+
+const CONTEXT_FIELDS = [
+  'context', 'parentContext', 'passage', 'stimulus',
+  'sourceText', 'comprehensionText', 'extract', 'preamble', 'instructions',
+];
+
+function normalize(value) {
+  if (value == null) return '';
+
+  // Array of paragraphs, or array of { text } blocks
+  if (Array.isArray(value)) {
+    return value
+      .map(v => (typeof v === 'string' ? v : v?.text || v?.content || ''))
+      .filter(Boolean)
+      .join('\n\n')
+      .trim();
+  }
+
+  // Object wrapper — never let this reach React, it throws
+  if (typeof value === 'object') {
+    return normalize(value.text ?? value.content ?? value.body ?? '');
+  }
+
+  // A whitespace-only string is truthy but renders as nothing.
+  // Trimming here is what turns an invisible bug into a clean null.
+  return String(value).trim();
+}
+
+function pickFrom(doc, fields = CONTEXT_FIELDS) {
+  if (!doc) return '';
+  for (const f of fields) {
+    const text = normalize(doc[f]);
+    if (text) return text;
+  }
+  return '';
+}
+
+/**
+ * Resolve the passage a question depends on.
+ *
+ * @param question      the question being displayed
+ * @param allQuestions  every question in the exam, for parent lookup
+ */
+export function resolveContext(question, allQuestions = []) {
+  if (!question) return '';
+
+  // 1. Passage stored directly on the question
+  const direct = pickFrom(question);
+  if (direct) return direct;
+
+  // 2. Passage stored on a parent row this question points at
+  const parentKey =
+    question.parentId ??
+    question.parentQuestionId ??
+    question.parentNumber ??
+    question.sectionId ??
+    question.groupId;
+
+  if (parentKey == null) return '';
+
+  const parent = allQuestions.find(q =>
+    q.id === parentKey ||
+    q.questionId === parentKey ||
+    String(q.questionNumber ?? q.number ?? '') === String(parentKey)
+  );
+
+  if (!parent) return '';
+
+  // The parent may hold it in a context field, or the passage may simply be
+  // the parent's own question text (a header row carrying the extract).
+  return pickFrom(parent) || pickFrom(parent, ['questionText', 'text', 'question', 'body']);
+}
+
+/* ────────────────────────────────────────────────────────────
+   Panel
+   ──────────────────────────────────────────────────────────── */
+
+function ParentContextPanel({ context, debug = false }) {
+  const text = normalize(context);
   const [open, setOpen] = React.useState(true);
-  if (!context) return null;
+
+  // Nothing to show. In dev, say so rather than vanishing — a silently
+  // absent passage is why this was hard to spot.
+  if (!text) {
+    if (!debug) return null;
+    return (
+      <div style={{
+        marginBottom: 16, padding: '10px 14px', borderRadius: 10,
+        border: '1.5px dashed #f87171', background: '#fef2f2',
+        fontSize: 11, color: '#991b1b', fontWeight: 700,
+      }}>
+        No passage resolved. Received: {JSON.stringify(context)?.slice(0, 120) || 'undefined'}
+      </div>
+    );
+  }
+
   return (
     <div style={{
       marginBottom: 16, borderRadius: 10,
@@ -396,6 +493,7 @@ function ParentContextPanel({ context }) {
     }}>
       <button
         onClick={() => setOpen(v => !v)}
+        aria-expanded={open}
         style={{
           width: '100%', display: 'flex', justifyContent: 'space-between',
           alignItems: 'center', padding: '8px 14px', background: 'none',
@@ -412,12 +510,13 @@ function ParentContextPanel({ context }) {
           lineHeight: 1.7, whiteSpace: 'pre-wrap', borderTop: '1px solid #fde68a',
           maxHeight: 260, overflowY: 'auto',
         }}>
-          {context}
+          {text}
         </div>
       )}
     </div>
   );
 }
+
 
 // ─── MarkdownTable Component ──────────────────────────────────────────────
 function MarkdownTable({ source }) {

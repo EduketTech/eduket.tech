@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { doc, onSnapshot, collection, getDoc, query, where } from 'firebase/firestore';
-import { getAuth, signOut } from 'firebase/auth';
+import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
 import { db } from '../utils/firebase';
 import {
   BookOpen, School, ShieldCheck, Upload, ClipboardList,
@@ -35,7 +35,8 @@ import {
   ACCEPT_STRING,
 } from '../utils/examUploadUtils';
 import { ExamTimePicker } from '../utils/ExamTimePicker';
-
+import { PrincipalReviewBadge, PrincipalReviewsModal, usePrincipalReviews } from './PrincipalReviewsModal';
+import PrincipalReviewsInline from '../utils/PrincipalReviewsInline';
 
 
 
@@ -550,6 +551,12 @@ export default function TeacherDashboard() {
       (teacherProfile?.curriculum && teacherProfile.curriculum.trim() !== "") ? teacherProfile.curriculum :
         selectedCurriculum || 'CAPS';
 
+
+  const [showReviews, setShowReviews] = useState(false);
+  const { reviews } = usePrincipalReviews(school?.id || teacherProfile?.schoolId, auth.currentUser?.uid);
+
+
+
   // ─── Auth listener ────────────────────────────────────────────────── 
   useEffect(() => {
     const unsub = auth.onAuthStateChanged(setUser);
@@ -633,27 +640,34 @@ export default function TeacherDashboard() {
   }, [teacherSubjects.join(',')]);
 
 
-  // ─── Fetch exam usage ──────────────────────────────────────────────────  
+  // ─── Fetch exam usage ──────────────────────────────────────────────────
   useEffect(() => {
-    const fetchUsage = async () => {
-      const user = auth.currentUser;
-      if (!user) return;
-
+    const fetchUsage = async (user) => {
       try {
         const idToken = await user.getIdToken();
         const response = await fetch(`${API}/exams/usage`, {
           headers: { 'Authorization': `Bearer ${idToken}` },
         });
-        const data = await response.json();
-        if (response.ok) setExamUsage(data);
+        const text = await response.text();
+        if (!response.ok) {
+          console.error('[examUsage]', response.status, text.slice(0, 200));
+          return;
+        }
+        setExamUsage(JSON.parse(text));
       } catch (err) {
         console.error('[examUsage]', err);
       } finally {
         setUsageLoading(false);
       }
     };
-    fetchUsage();
+
+    const unsub = onAuthStateChanged(auth, user => {
+      if (user) fetchUsage(user);
+      else setUsageLoading(false);      // signed out — stop the spinner
+    });
+    return () => unsub();
   }, []);
+
 
   // ─── FILTERED + SORTED AUDIT LIST ────────────────────────────────────────
   const filteredExams = uploadedExams
@@ -1015,6 +1029,14 @@ export default function TeacherDashboard() {
               </p>
             </div>
             <div className="flex flex-col items-end gap-2">
+              <PrincipalReviewBadge reviews={reviews} onClick={() => setShowReviews(true)} />
+
+              <div className="flex items-center gap-2 px-4 py-2 bg-white/10 rounded-2xl text-xs font-bold border border-white/5">
+                {activeCurriculum}
+              </div>
+            </div>
+
+            <div className="flex flex-col items-end gap-2">
               {/* ✅  Drive badge removed, curriculum badge kept: */}
               <div className="flex items-center gap-2 px-4 py-2 bg-white/10 rounded-2xl text-xs font-bold border border-white/5">
                 {activeCurriculum}
@@ -1065,6 +1087,13 @@ export default function TeacherDashboard() {
               icon={ShieldCheck}
               label="Uploaded"
               value={`${uploadedExams.length} paper${uploadedExams.length !== 1 ? 's' : ''}`}
+            />
+
+            <PrincipalReviewsModal
+              open={showReviews}
+              onClose={() => setShowReviews(false)}
+              reviews={reviews}
+              reviewerNames={{ [school?.principalUid]: school?.principalName }}
             />
 
           </div>
@@ -1776,6 +1805,11 @@ export default function TeacherDashboard() {
           </div>
         )
       }
+
+      <PrincipalReviewsInline
+        reviews={reviews}
+        reviewerNames={{ [school?.principalUid]: school?.principalName }}
+      />
 
       {/* Edit modal */}
       {
