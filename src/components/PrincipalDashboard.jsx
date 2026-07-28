@@ -460,6 +460,23 @@ export default function PrincipalDashboard({ principal }) {
         [attemptsByStudent]
     );
 
+    const examAttempts = useCallback((exam) => {
+        const examObj = typeof exam === 'string' ? { id: exam } : exam;
+        const id = examObj?.id;
+        const customId = examObj?.examId;   // the field set during upload
+
+        return schoolAttempts.filter(a => {
+            // Never match undefined === undefined — always require a real value
+            if (!a.examId && !a.sourceUploadId && !a.exam_id) return false;
+
+            return (
+                (a.examId && (a.examId === id || a.examId === customId)) ||
+                (a.sourceUploadId && (a.sourceUploadId === id || a.sourceUploadId === customId)) ||
+                (a.exam_id && (a.exam_id === id || a.exam_id === customId))
+            );
+        });
+    }, [schoolAttempts]);
+
     const filteredStudents = useMemo(() => students.filter(s => {
         const matchGrade = filterGrade === 'All' || s.grade === filterGrade;
         const matchSubject = filterSubject === 'All' || (s.subjects || []).includes(filterSubject);
@@ -608,50 +625,6 @@ export default function PrincipalDashboard({ principal }) {
 
     const handleUpgrade = useCallback(() => setShowUpgradeModal(true), []);
 
-    const exportPDF = useCallback(() => {
-        const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-        pdf.setFontSize(18);
-        pdf.setTextColor(40, 40, 40);
-        pdf.text(school?.name || 'School Report', 20, 20);
-        pdf.setFontSize(10);
-        pdf.setTextColor(100, 100, 100);
-        pdf.text(`Generated: ${new Date().toLocaleDateString('en-ZA')}`, 20, 27);
-        pdf.text(`Principal: ${principal?.title || ''} ${principal?.name || ''} ${principal?.surname || ''}`, 20, 33);
-        pdf.text(`Plan: ${TIER_VISUAL[activeTier]?.label || activeTier}`, 20, 39);
-
-        let y = 48;
-        autoTable(pdf, {
-            startY: y,
-            head: [['Metric', 'Value']],
-            body: [
-                ['Total Teachers', teachers.length],
-                ['Total Students', students.length],
-                ['Exams Uploaded', exams.length],
-                ['Avg Score', avgScore != null ? `${avgScore}%` : '—'],
-                ['Pass Rate', `${overallPassRate}%`],
-            ],
-            styles: { fontSize: 9 },
-            headStyles: { fillColor: [79, 70, 229] },
-        });
-        y = pdf.lastAutoTable.finalY + 10;
-
-        autoTable(pdf, {
-            startY: y,
-            head: [['Name', 'Surname', 'Grade', 'Subjects', 'Avg Score']],
-            body: filteredStudents.map(s => {
-                const atts = studentAttempts(s.uid);
-                return [s.name, s.surname, s.grade,
-                (s.subjects || []).slice(0, 3).join(', '),
-                averageScore(atts) != null ? `${averageScore(atts)}%` : '—'];
-            }),
-            styles: { fontSize: 8 },
-            headStyles: { fillColor: [79, 70, 229] },
-        });
-
-        pdf.save(`${school?.name || 'report'}_${new Date().toISOString().split('T')[0]}.pdf`);
-    }, [school, principal, teachers, students, exams, attempts, filteredStudents, avgScore, overallPassRate, activeTier]);
-
-
     const buildPdf = useCallback(() => {
         const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
         pdf.setFontSize(18);
@@ -691,8 +664,7 @@ export default function PrincipalDashboard({ principal }) {
             styles: { fontSize: 8 },
             headStyles: { fillColor: [79, 70, 229] },
         });
-
-        pdf.save(`${school?.name || 'report'}_${new Date().toISOString().split('T')[0]}.pdf`);
+        return pdf;
     }, [school, principal, teachers, students, exams, attempts, filteredStudents, avgScore, overallPassRate, activeTier]);
 
     const summaryText = useMemo(() => (
