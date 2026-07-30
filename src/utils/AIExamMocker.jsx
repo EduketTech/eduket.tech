@@ -829,6 +829,7 @@ export default function AIExamMocker({ student }) {
   const answersRef = useRef({});
   const STUDENT_ID = useStudentId();
   const [studentInfo, setStudentInfo] = useState(null);
+  const [messages, setMessages] = useState([]);
 
 
   useEffect(() => {
@@ -1198,13 +1199,44 @@ export default function AIExamMocker({ student }) {
   const askAgent = async () => {
     const q = agentQuestion.trim();
     if (!q || agentLoading) return;
-    setAgentLoading(true); setAgentReply("");
+
+    const userMsg = { sender: 'user', text: q };
+    const updatedHistory = [...messages, userMsg];
+
+    setMessages(updatedHistory);
+    setAgentLoading(true);
+    setAgentQuestion("");
+
     try {
-      const res = await fetch(`${API}/agent-chat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ student_id: STUDENT_ID, message: q }) });
+      // Filter out UI error alerts before sending conversation history
+      const cleanHistory = messages.filter(
+        (m) => !m.text.startsWith("⚠️")
+      );
+
+      const res = await fetch(`${API}/agent-chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          student_id: STUDENT_ID,
+          message: q,
+          history: cleanHistory // Clean past turns only; backend appends current message 'q'
+        })
+      });
+
+      if (!res.ok) {
+        throw new Error(`Server returned ${res.status}`);
+      }
+
       const data = await res.json();
-      setAgentReply(data.response || data.answer || "No response.");
-    } catch { setAgentReply("⚠️ Could not reach the agent."); }
-    finally { setAgentLoading(false); setAgentQuestion(""); }
+      const replyText = data.response || "No response.";
+
+      setMessages([...updatedHistory, { sender: 'agent', text: replyText }]);
+    } catch (err) {
+      console.error("[Agent Error]:", err);
+      setMessages([...updatedHistory, { sender: 'agent', text: "⚠️ Could not reach the agent." }]);
+    } finally {
+      setAgentLoading(false);
+    }
   };
 
   // ── Landing screen ─────────────────────────────────────────────────────────
