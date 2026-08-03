@@ -41,6 +41,7 @@ import ExportShareMenu from '../utils/ExportShareMenu';
 
 
 
+
 // ─── GRADE ORDER ──────────────────────────────────────────────────────────────
 // 1. Defensively find the school object under any typical naming pattern
 const activeSchoolInstance =
@@ -71,25 +72,36 @@ const dynamicGradeOrder = Object.keys(activeGradeCounts).sort((a, b) => {
 const GRADE_ORDER = dynamicGradeOrder;
 
 // ─── TIER VISUAL META ─────────────────────────────────────────────────────────
-const TIER_VISUAL = TIERS.map(tier => ({
-    label: tier.label,
-    icon: tier.icon,
-    gradient: tier.gradient,
-    badge: tier.gradientBg,
-    ring: tier.gradientBg,
-}));
+const TIER_VISUAL = TIERS.reduce((acc, tier) => {
+    acc[tier.id] = {
+        label: tier.label,
+        icon: tier.icon,
+        gradient: tier.gradient,
+        badge: tier.gradientBg,
+        ring: tier.gradientBg,
+    };
+    return acc;
+}, {});
 
 // ─── LIMIT STATUS HOOK ────────────────────────────────────────────────────────
-// Single source of truth for all limit checks across the dashboard
+// Single source of truth for all dynamic limit checks (base + add-on capacity)
 
-function useLimitStatus(tier, usage = {}) {
+export function useLimitStatus(tier, usage = {}, dynamicLimits = {}) {
     return useMemo(() => {
-        const limits = getTierConfig(tier).limits;
+        const tierConfig = getTierConfig(tier);
+
+        // Compute actual total limit (dynamic allocated capacity || base tier allowance)
+        const computedLimits = {
+            students: dynamicLimits?.studentLimit ?? dynamicLimits?.studentCount ?? tierConfig?.includedStudents ?? 50,
+            teachers: dynamicLimits?.teacherLimit ?? dynamicLimits?.teacherCount ?? tierConfig?.includedTeachers ?? 5,
+            exams: tierConfig?.limits?.exams ?? null, // null = unlimited if applicable
+        };
 
         const check = (key) => {
-            const max = limits[key] ?? null;
+            const max = computedLimits[key] ?? null;
             const used = usage[key] ?? 0;
             if (max === null) return { used, max: null, pct: 0, status: 'ok', blocked: false, warning: false };
+
             const pct = Math.min(100, Math.round((used / max) * 100));
             const blocked = used >= max;
             const warning = !blocked && pct >= 80;
@@ -103,35 +115,37 @@ function useLimitStatus(tier, usage = {}) {
         const anyBlocked = students.blocked || exams.blocked || teachers.blocked;
         const anyWarning = students.warning || exams.warning || teachers.warning;
 
-        return { students, exams, teachers, anyBlocked, anyWarning, limits };
-    }, [tier, usage?.students, usage?.exams, usage?.teachers]);
+        return { students, exams, teachers, anyBlocked, anyWarning, limits: computedLimits };
+    }, [
+        tier,
+        usage?.students, usage?.exams, usage?.teachers,
+        dynamicLimits?.studentLimit, dynamicLimits?.studentCount,
+        dynamicLimits?.teacherLimit, dynamicLimits?.teacherCount
+    ]);
 }
 
 // ─── LIMIT ALERT BANNER ───────────────────────────────────────────────────────
-// Shows amber at 80%, red at 100%. Dismissible for warnings, sticky for blocks.
-function LimitAlertBanner({ resource, label, info, onUpgrade }) {
+export function LimitAlertBanner({ resource, label, info, onUpgrade }) {
     const [dismissed, setDismissed] = useState(false);
 
-    // Graceful exit if info is missing or status is 'ok'
     if (!info || info.status === 'ok') return null;
     if (dismissed && info.status === 'warn') return null;
 
     const isCrit = info.status === 'crit';
 
-
     return (
         <div className={`flex items-start gap-3 p-3.5 rounded-2xl border text-xs ${isCrit
-            ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-700 text-black'
-            : 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-700 text-black'
+            ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-700 text-slate-800 dark:text-red-200'
+            : 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-700 text-slate-800 dark:text-amber-200'
             }`}>
             {isCrit
                 ? <Lock size={14} className="text-red-500 flex-shrink-0 mt-0.5" />
                 : <AlertTriangle size={14} className="text-amber-500 flex-shrink-0 mt-0.5" />}
             <div className="flex-1 min-w-0">
-                <p>
+                <p className="font-medium">
                     {isCrit
-                        ? `You've used all ${info.max} ${label.toLowerCase()} on your current plan.`
-                        : `${info.used} of ${info.max} used (${info.pct}%). Consider upgrading.`}
+                        ? `You've reached your seat limit of ${info.max} ${label.toLowerCase()}. Add more seats to continue.`
+                        : `${info.used} of ${info.max} ${label.toLowerCase()} allocated (${info.pct}%). Consider expanding your seat quota.`}
                 </p>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">
@@ -140,7 +154,7 @@ function LimitAlertBanner({ resource, label, info, onUpgrade }) {
                     className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-[10px] font-black text-white transition-opacity hover:opacity-90 ${isCrit ? 'bg-red-500' : 'bg-amber-500'
                         }`}
                 >
-                    <ArrowUpRight size={10} /> Upgrade
+                    <ArrowUpRight size={10} /> Add Seats / Upgrade
                 </button>
                 {!isCrit && (
                     <button onClick={() => setDismissed(true)} className="text-amber-400 hover:text-amber-600">
@@ -153,8 +167,7 @@ function LimitAlertBanner({ resource, label, info, onUpgrade }) {
 }
 
 // ─── LIMIT GATE ───────────────────────────────────────────────────────────────
-// Wraps any action button/form. When blocked, shows a lock overlay instead.
-function LimitGate({ blocked, resource = 'resource', onUpgrade, children }) {
+export function LimitGate({ blocked, resource = 'seats', onUpgrade, children }) {
     if (!blocked) return <>{children}</>;
     return (
         <div className="relative rounded-2xl border-2 border-dashed border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/10 p-6 flex flex-col items-center gap-3 text-center">
@@ -163,40 +176,40 @@ function LimitGate({ blocked, resource = 'resource', onUpgrade, children }) {
             </div>
             <div>
                 <p className="text-sm font-black text-red-700 dark:text-red-300">
-                    {resource.charAt(0).toUpperCase() + resource.slice(1)} limit reached
+                    {resource.charAt(0).toUpperCase() + resource.slice(1)} capacity reached
                 </p>
                 <p className="text-xs text-red-500 dark:text-red-400 mt-1">
-                    Upgrade your plan to add more {resource}.
+                    Add add-on seats or upgrade your plan to increase limits.
                 </p>
             </div>
             <button
                 onClick={onUpgrade}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-black text-white bg-red-500 hover:bg-red-600 transition-colors"
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-black text-white bg-red-500 hover:bg-red-600 transition-colors shadow-sm"
             >
-                <ArrowUpRight size={12} /> View upgrade options
+                <ArrowUpRight size={12} /> Manage Seats & Plan
             </button>
         </div>
     );
 }
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
-function ScoreBadge({ score }) {
+export function ScoreBadge({ score }) {
     if (score == null) return <span className="text-slate-400 text-xs">—</span>;
-    const color = score >= 70 ? 'text-emerald-600 bg-emerald-50' :
-        score >= 50 ? 'text-amber-600 bg-amber-50' :
-            score >= 40 ? 'text-orange-600 bg-orange-50' :
-                'text-green-600 bg-red-50';
+    const color = score >= 70 ? 'text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40' :
+        score >= 50 ? 'text-amber-600 bg-amber-50 dark:bg-amber-950/40' :
+            score >= 40 ? 'text-orange-600 bg-orange-50 dark:bg-orange-950/40' :
+                'text-red-600 bg-red-50 dark:bg-red-950/40';
     return (
-        <span className={`text-xs font-black px-2 py-0.5 rounded-lg ${color}`}>{score}</span>
+        <span className={`text-xs font-black px-2 py-0.5 rounded-lg ${color}`}>{score}%</span>
     );
 }
 
-function StatCard({ label, value, sub, icon: Icon, color = 'indigo' }) {
+export function StatCard({ label, value, sub, icon: Icon, color = 'indigo' }) {
     const palette = {
-        indigo: 'bg-indigo-50 text-indigo-600 dark:bg-indigo-900/20',
-        emerald: 'bg-emerald-50 text-emerald-600 dark:bg-emerald-900/20',
-        amber: 'bg-amber-50 text-amber-600 dark:bg-amber-900/20',
-        rose: 'bg-rose-50 text-rose-600 dark:bg-rose-900/20',
+        indigo: 'bg-indigo-50 text-indigo-600 dark:bg-indigo-900/20 dark:text-indigo-400',
+        emerald: 'bg-emerald-50 text-emerald-600 dark:bg-emerald-900/20 dark:text-emerald-400',
+        amber: 'bg-amber-50 text-amber-600 dark:bg-amber-900/20 dark:text-amber-400',
+        rose: 'bg-rose-50 text-rose-600 dark:bg-rose-900/20 dark:text-rose-400',
     };
     return (
         <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 border border-slate-100 dark:border-slate-700 flex items-center gap-3">
@@ -205,15 +218,14 @@ function StatCard({ label, value, sub, icon: Icon, color = 'indigo' }) {
             </div>
             <div className="min-w-0">
                 <p className="text-xl font-black text-slate-800 dark:text-white leading-none">{value ?? '—'}</p>
-                <p className="text-[10px] font-bold text-slate-500 mt-0.5">{label}</p>
-                {sub && <p className="text-[9px] text-slate-400 mt-0.5">{sub}</p>}
+                <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 mt-0.5">{label}</p>
+                {sub && <p className="text-[9px] text-slate-400 dark:text-slate-500 mt-0.5">{sub}</p>}
             </div>
         </div>
     );
 }
 
-// Enhanced UsageMeter — amber at 80%, red at 100%
-function UsageMeter({ label, used, limit, color = '#4f46e5' }) {
+export function UsageMeter({ label, used, limit, color = '#4f46e5' }) {
     if (limit == null) return (
         <div className="space-y-1">
             <div className="flex items-center justify-between">
@@ -246,15 +258,14 @@ function UsageMeter({ label, used, limit, color = '#4f46e5' }) {
             <div className="h-1.5 w-full bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
                 <div
                     className="h-full rounded-full transition-all duration-700"
-                    style={{ width: `${pct}%`, backgroundColor: barColor, color: 'black' }}
+                    style={{ width: `${pct}%`, backgroundColor: barColor }}
                 />
             </div>
         </div>
     );
 }
 
-function TierBadge({ tier, collapsed }) {
-    // Fetch the config directly from our unified source of truth
+export function TierBadge({ tier, collapsed }) {
     const config = getTierConfig(tier);
     const Icon = config.icon;
 
@@ -267,7 +278,7 @@ function TierBadge({ tier, collapsed }) {
     }
 
     return (
-        <div className={`flex items-center gap-2 px-2 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-700`}>
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-700">
             <div className={`w-5 h-5 rounded-lg flex items-center justify-center bg-gradient-to-br ${config.gradient} flex-shrink-0`}>
                 <Icon size={10} className="text-white" />
             </div>
@@ -278,19 +289,15 @@ function TierBadge({ tier, collapsed }) {
     );
 }
 
-function UpgradeBanner({ tier, onUpgrade, onDismiss }) {
-    // 1. Enterprise has no upsell
+export function UpgradeBanner({ tier, onUpgrade, onDismiss }) {
     if (tier === 'platinum') return null;
 
-    // 2. Define messages based on the TIER_PLANS structure
-    // This keeps it aligned with your TIER_CONFIG constant
     const messages = {
-        free: "You're on the Free plan. Upgrade to unlock more students, exams & AI marking.",
-        silver: 'Upgrade to Gold for unlimited exams, advanced analytics & priority support.',
-        gold: 'Upgrade to Platinum for multi-school management, SLA support & custom branding.',
+        free: "You're on the Free tier. Upgrade base plan or purchase add-on seats for extra student capacity.",
+        silver: 'Upgrade to Gold for unlimited exams, advanced reporting & reduced per-seat rates.',
+        gold: 'Upgrade to Platinum for custom SLA support, priority processing & maximum seat savings.',
     };
 
-    // 3. Fallback check: if the tier isn't in our list, don't show a potentially wrong message
     if (!messages[tier]) return null;
     return (
         <div className="relative bg-gradient-to-r from-violet-600 to-indigo-600 rounded-2xl p-4 flex items-center gap-3 overflow-hidden print:hidden">
@@ -308,7 +315,7 @@ function UpgradeBanner({ tier, onUpgrade, onDismiss }) {
                 onClick={onUpgrade}
                 className="flex-shrink-0 flex items-center gap-1 bg-white text-indigo-700 text-[10px] font-black px-3 py-2 rounded-xl hover:bg-indigo-50 transition-colors"
             >
-                Upgrade <ArrowUpRight size={11} />
+                Manage Seats <ArrowUpRight size={11} />
             </button>
             {onDismiss && (
                 <button onClick={onDismiss} className="flex-shrink-0 text-white/60 hover:text-white">
@@ -319,8 +326,8 @@ function UpgradeBanner({ tier, onUpgrade, onDismiss }) {
     );
 }
 
-function LockedFeature({ featureName, requiredTier, onUpgrade }) {
-    const vis = TIER_VISUAL[requiredTier] || TIER_VISUAL.starter;
+export function LockedFeature({ featureName, requiredTier, onUpgrade }) {
+    const vis = TIER_VISUAL[requiredTier] || TIER_VISUAL.free;
     return (
         <div className="relative bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 p-10 text-center overflow-hidden">
             <div className="absolute inset-0 bg-slate-50/70 dark:bg-slate-900/70 backdrop-blur-[2px] rounded-2xl" />
@@ -332,7 +339,7 @@ function LockedFeature({ featureName, requiredTier, onUpgrade }) {
                 <p className="text-xs text-slate-400">
                     Available on the{' '}
                     <span className={`font-black bg-gradient-to-r ${vis.gradient} bg-clip-text text-transparent`}>
-                        {TIER_VISUAL[requiredTier]?.label}
+                        {vis.label}
                     </span>{' '}
                     plan and above.
                 </p>
@@ -340,7 +347,7 @@ function LockedFeature({ featureName, requiredTier, onUpgrade }) {
                     onClick={onUpgrade}
                     className="flex items-center gap-2 px-5 py-2 rounded-xl text-white text-xs font-black bg-gradient-to-r from-violet-600 to-indigo-600 hover:opacity-90 transition-opacity"
                 >
-                    <Zap size={12} /> Unlock {TIER_VISUAL[requiredTier]?.label}
+                    <Zap size={12} /> Unlock {vis.label}
                 </button>
             </div>
         </div>

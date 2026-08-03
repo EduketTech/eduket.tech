@@ -1,143 +1,151 @@
 // ─── tierEnforcer.js ──────────────────────────────────────────────────────────
-// Call these before any action that is restricted by tier.
-// All functions return { allowed, message, upgradeRequired } so the UI
-// can show a consistent "upgrade" prompt rather than a silent failure.
+// Front-end guardrails & SweetAlert upgrade prompts for dynamic seat-based pricing.
 
 import { doc, getDoc, collection, query, where, getCountFromServer } from 'firebase/firestore';
 import { db } from './firebase';
-import { checkLimit, getTier } from './tierConfig';
+import {
+    getSchoolExamLimit,
+    canAccessParentDashboard,
+    isAtLimit,
+    getTierConfig,
+    FREE_TIER_MONTHLY_LIMIT
+} from './tierLimits';
 import Swal from 'sweetalert2';
 
-// ─── Fetch current school tier ────────────────────────────────────────────────
+// ─── Fetch School Subscription & Seats ───────────────────────────────────────
 
-export async function getSchoolTier(schoolId) {
-    if (!schoolId) return 'free';
-    const snap = await getDoc(doc(db, 'schools', schoolId));
-    return snap.exists() ? (snap.data().tier || 'free') : 'free';
+export async function getSchoolSubscription(schoolId) {
+    if (!schoolId) return { status: 'unpaid', seats: { students: 0, teachers: 0 }, examLimit: FREE_TIER_MONTHLY_LIMIT };
+
+    try {
+        const snap = await getDoc(doc(db, 'subscriptions', schoolId));
+        if (!snap.exists()) {
+            return { status: 'unpaid', seats: { students: 10, teachers: 2 }, examLimit: FREE_TIER_MONTHLY_LIMIT };
+        }
+
+        const data = snap.data();
+        const seats = data.seats || { students: 0, teachers: 0 };
+        const examLimit = data.customExamLimit ?? getSchoolExamLimit(seats);
+
+        return {
+            status: data.status || 'unpaid',
+            seats,
+            examLimit,
+            tierId: data.tier || 'starter'
+        };
+    } catch (err) {
+        console.error("Error loading school subscription:", err);
+        return { status: 'unpaid', seats: { students: 0, teachers: 0 }, examLimit: FREE_TIER_MONTHLY_LIMIT };
+    }
 }
 
-// ─── Count helpers ────────────────────────────────────────────────────────────
+// ─── Firestore Count Helpers (Aligned with Backend Database Schema) ───────────
 
-async function countCollection(collectionName, schoolId) {
+async function countUserRole(schoolId, role) {
+    // Queries the central 'users' collection filtering by role (student/teacher)
     const q = query(
-        collection(db, collectionName),
-        where('schoolId', '==', schoolId)
+        collection(db, 'users'),
+        where('schoolId', '==', schoolId),
+        where('role', '==', role)
     );
     const snap = await getCountFromServer(q);
     return snap.data().count;
 }
 
 async function countMonthlyExams(schoolId) {
-    const startOfMonth = new Date();
-    startOfMonth.setDate(1);
-    startOfMonth.setHours(0, 0, 0, 0);
+    // Matches backend ISO-8601 month start string filter on 'uploadedAt'
+    const now = new Date();
+    const startOfMonthISO = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+
     const q = query(
         collection(db, 'exams'),
         where('schoolId', '==', schoolId),
-        where('createdAt', '>=', startOfMonth)
+        where('uploadedAt', '>=', startOfMonthISO)
     );
     const snap = await getCountFromServer(q);
     return snap.data().count;
 }
 
-async function countMonthlyAiMarks(schoolId) {
-    const startOfMonth = new Date();
-    startOfMonth.setDate(1);
-    startOfMonth.setHours(0, 0, 0, 0);
-    const q = query(
-        collection(db, 'auditLog'),
-        where('schoolId', '==', schoolId),
-        where('type', '==', 'ai_mark'),
-        where('timestamp', '>=', startOfMonth)
-    );
-    const snap = await getCountFromServer(q);
-    return snap.data().count;
-}
-
-// ─── Enforcement functions ────────────────────────────────────────────────────
+// ─── Enforcement Guard Checks ────────────────────────────────────────────────
 
 /**
- * Can this school add another teacher?
+ * Can this school register another teacher?
  */
 export async function canAddTeacher(schoolId) {
-    const [tier, current] = await Promise.all([
-        getSchoolTier(schoolId),
-        countCollection('teachers', schoolId),
+    const [sub, current] = await Promise.all([
+        getSchoolSubscription(schoolId),
+        countUserRole(schoolId, 'teacher'),
     ]);
-    return { ...checkLimit(tier, 'teachers', current), tier };
+
+    const maxSeats = sub.seats.teachers || 0;
+    const allowed = current < maxSeats;
+
+    return {
+        allowed,
+        current,
+        limit: maxSeats,
+        message: allowed ? 'Allowed' : `Teacher seat limit reached (${current}/${maxSeats}). Please add teacher seats to your plan.`
+    };
 }
 
 /**
- * Can this school add another student?
+ * Can this school register another student?
  */
 export async function canAddStudent(schoolId) {
-    const [tier, current] = await Promise.all([
-        getSchoolTier(schoolId),
-        countCollection('students', schoolId),
+    const [sub, current] = await Promise.all([
+        getSchoolSubscription(schoolId),
+        countUserRole(schoolId, 'student'),
     ]);
-    return { ...checkLimit(tier, 'students', current), tier };
+
+    const maxSeats = sub.seats.students || 0;
+    const allowed = current < maxSeats;
+
+    return {
+        allowed,
+        current,
+        limit: maxSeats,
+        message: allowed ? 'Allowed' : `Student seat limit reached (${current}/${maxSeats}). Please add student seats to your plan.`
+    };
 }
 
 /**
- * Can this school upload another exam this month?
+ * Can this school upload another exam paper this month?
  */
 export async function canUploadExam(schoolId) {
-    const [tier, current] = await Promise.all([
-        getSchoolTier(schoolId),
+    const [sub, current] = await Promise.all([
+        getSchoolSubscription(schoolId),
         countMonthlyExams(schoolId),
     ]);
-    return { ...checkLimit(tier, 'examUploads', current), tier };
-}
 
-/**
- * Can this school run another AI mark this month?
- */
-export async function canRunAiMark(schoolId) {
-    const [tier, current] = await Promise.all([
-        getSchoolTier(schoolId),
-        countMonthlyAiMarks(schoolId),
-    ]);
-    return { ...checkLimit(tier, 'aiMarksPerMonth', current), tier };
-}
+    const limit = sub.examLimit;
+    const allowed = current < limit;
 
-// ─── Feature gate checks (non-async, based on tier string) ───────────────────
-
-export function featureAllowed(tierId, feature) {
-    const gates = {
-        googleDrive: ['basic', 'professional', 'enterprise'],
-        pdfExport: ['basic', 'professional', 'enterprise'],
-        auditLog: ['professional', 'enterprise'],
-        advancedAnalytics: ['professional', 'enterprise'],
-        customBranding: ['professional', 'enterprise'],
-        studyPlanner: ['professional', 'enterprise'],
-        apiAccess: ['enterprise'],
-        multiCampus: ['enterprise'],
-        circuitReporting: ['enterprise'],
+    return {
+        allowed,
+        current,
+        limit,
+        message: allowed ? 'Allowed' : `Monthly exam upload limit reached (${current}/${limit}). Increase your purchased seats to boost your monthly upload quota.`
     };
-    return (gates[feature] || []).includes(tierId);
 }
 
-// ─── UI helper — show Swal upgrade prompt ────────────────────────────────────
+// ─── UI Helper — SweetAlert Upgrade Prompt ───────────────────────────────────
 
 /**
- * Run a guard check and show an upgrade Swal if blocked.
- * Returns true if the action is allowed, false if blocked.
- *
- * @param {Function} checkFn  - async function returning { allowed, message }
- * @param {Function} onUpgrade - callback to open upgrade UI
+ * Run a guard check and show an upgrade popup if blocked.
+ * Returns true if allowed, false if blocked.
  */
 export async function guardedAction(checkFn, onUpgrade) {
     const result = await checkFn();
     if (result.allowed) return true;
 
     await Swal.fire({
-        title: '⚠️ Plan Limit Reached',
+        title: '⚠️ Limit Reached',
         text: result.message,
         icon: 'warning',
         showCancelButton: true,
-        confirmButtonText: '🚀 Upgrade Plan',
-        cancelButtonText: 'Maybe Later',
-        confirmButtonColor: '#8b5cf6',
+        confirmButtonText: '🚀 Manage Seats / Upgrade',
+        cancelButtonText: 'Cancel',
+        confirmButtonColor: '#3b82f6',
         cancelButtonColor: '#64748b',
     }).then((res) => {
         if (res.isConfirmed && onUpgrade) onUpgrade();
@@ -147,21 +155,23 @@ export async function guardedAction(checkFn, onUpgrade) {
 }
 
 /**
- * Feature gate with Swal prompt.
- * @param {string} tierId
- * @param {string} feature
- * @param {Function} onUpgrade
+ * Feature gate check with SweetAlert popup (e.g. Parent Dashboard)
  */
-export function guardFeature(tierId, feature, onUpgrade) {
-    if (featureAllowed(tierId, feature)) return true;
+export function guardFeature(tierId, featureKey, onUpgrade) {
+    let allowed = false;
 
-    const tierName = getTier(tierId).name;
+    if (featureKey === 'parentDashboard') {
+        allowed = canAccessParentDashboard(tierId);
+    }
+
+    if (allowed) return true;
+
     Swal.fire({
-        title: '🔒 Feature Locked',
-        html: `<b>${feature.replace(/([A-Z])/g, ' $1')}</b> is not available on the <b>${tierName}</b> plan.<br/><br/>Upgrade to unlock this feature.`,
+        title: '🔒 Premium Feature',
+        html: `This feature requires an <b>Enterprise</b> allocation or Parent Add-on.<br/><br/>Manage your subscription to unlock it.`,
         icon: 'info',
         showCancelButton: true,
-        confirmButtonText: '🚀 View Upgrade Options',
+        confirmButtonText: '🚀 View Subscription Options',
         cancelButtonText: 'Close',
         confirmButtonColor: '#8b5cf6',
     }).then((res) => {
@@ -171,20 +181,20 @@ export function guardFeature(tierId, feature, onUpgrade) {
     return false;
 }
 
-// ─── Usage summary for dashboard display ─────────────────────────────────────
+// ─── Usage Summary (For Principal Dashboard Display) ─────────────────────────
 
-/**
- * Returns live usage numbers for a school.
- * Used by PrincipalDashboard to show limit bars.
- */
 export async function getSchoolUsage(schoolId) {
-    const [tier, teachers, students, exams, aiMarks] = await Promise.all([
-        getSchoolTier(schoolId),
-        countCollection('teachers', schoolId),
-        countCollection('students', schoolId),
+    const [sub, teachers, students, exams] = await Promise.all([
+        getSchoolSubscription(schoolId),
+        countUserRole(schoolId, 'teacher'),
+        countUserRole(schoolId, 'student'),
         countMonthlyExams(schoolId),
-        countMonthlyAiMarks(schoolId),
     ]);
 
-    return { tier, teachers, students, exams, aiMarks };
+    return {
+        teachers: { used: teachers, limit: sub.seats.teachers || 0 },
+        students: { used: students, limit: sub.seats.students || 0 },
+        exams: { used: exams, limit: sub.examLimit },
+        status: sub.status,
+    };
 }

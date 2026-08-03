@@ -1,168 +1,151 @@
-import React, { useState, useEffect } from 'react';
-import { Check, ArrowRight, Lock, RefreshCw, Loader2 } from 'lucide-react';
-import { TIERS, TIER_ORDER } from '../utils/tierConfig';
-import { fetchAllTierQuotes, formatCurrency } from '../services/billingApi';
+import React from 'react';
+import { TIERS, calculateSubscriptionQuote, isUpgrade, CYCLE_MONTHS } from '../utils/tierConfig';
+import { CheckCircle2, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 
-function TierCard({ tier, selected, current, billingCycle, onSelect, compact, quote, quoteLoading }) {
-    if (!tier || !tier.id) return null;
+// Helper to calculate total price using the backend-aligned quote engine
+function calculateSubscriptionTotal(plan, studentCount, teacherCount, billingCycle) {
+    if (plan.id === 'free') return 0;
 
-    const Icon = tier.icon; // Now sourced directly from config
-    const isSelected = selected === tier.id;
-    const isCurrent = current === tier.id;
-    const isFree = tier.monthlyPrice === 0 && tier.annualPrice === 0;
+    const quote = calculateSubscriptionQuote({
+        students: plan.seats?.students ?? studentCount ?? 0,
+        teachers: plan.seats?.teachers ?? teacherCount ?? 0,
+        cycle: billingCycle,
+    });
 
-    // Downgrade logic using unified TIER_ORDER
-    const isDowngrade = current && TIER_ORDER.indexOf(tier.id) < TIER_ORDER.indexOf(current);
+    return quote.totalDueNow;
+}
 
-    const handleClick = () => {
-        if (!isCurrent) onSelect(tier.id);
-    };
+// ─── PLAN CARD COMPONENT ─────────────────────────────────────────────────────
+function PlanCard({ plan, currentTierId, onSelect, billingCycle, studentCount, teacherCount }) {
+    const isCurrent = plan.id === currentTierId;
+    const isUp = isUpgrade(currentTierId, plan.id);
+    const Icon = plan.icon;
+    const calculatedPrice = calculateSubscriptionTotal(plan, studentCount, teacherCount, billingCycle);
 
     return (
         <div
-            onClick={handleClick}
-            className={`
-                relative flex flex-col rounded-3xl border-2 transition-all duration-200 overflow-hidden
-                ${compact ? 'p-4' : 'p-6'}
-                ${isSelected
-                    ? `border-transparent ring-2 ring-slate-400 shadow-xl scale-[1.02]`
-                    : isCurrent
-                        ? 'border-transparent ring-2 ring-emerald-400 shadow-md'
-                        : 'border-slate-100 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-600 hover:shadow-lg cursor-pointer'}
-                bg-white dark:bg-slate-800
-            `}
+            className={`relative rounded-3xl p-6 border flex flex-col justify-between transition-all duration-200 min-h-[360px] ${isCurrent
+                ? `ring-2 bg-gradient-to-br ${plan.gradientBg}`
+                : 'border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-800/90 hover:border-slate-300 dark:hover:border-slate-700 hover:shadow-xl hover:shadow-slate-200/50 dark:hover:shadow-none'
+                }`}
+            style={isCurrent ? { '--tw-ring-color': plan.accentColor } : {}}
         >
-            {/* Most Popular badge */}
-            {tier.popular && !isCurrent && (
-                <div className="absolute top-0 right-0">
-                    <div className="bg-gradient-to-r from-violet-600 to-purple-600 text-white text-[9px] font-black px-3 py-1 rounded-bl-xl rounded-tr-3xl tracking-wider uppercase">
-                        Most Popular
-                    </div>
+            {/* Top Badges */}
+            {plan.popular && !isCurrent && (
+                <div
+                    className="absolute -top-3.5 left-1/2 -translate-x-1/2 px-4 py-1 rounded-full text-[10px] font-black uppercase tracking-widest text-white shadow-md"
+                    style={{ background: plan.accentColor }}
+                >
+                    Most Popular
                 </div>
             )}
-
-            {/* Current status badge */}
             {isCurrent && (
-                <div className="absolute top-3 left-3">
-                    <span className="flex items-center gap-1 text-[9px] font-black px-2 py-1 rounded-full bg-emerald-100 text-emerald-700">
-                        <Check size={9} /> Current Plan
-                    </span>
+                <div className="absolute -top-3.5 right-6 px-3.5 py-1 rounded-full text-[10px] font-black uppercase tracking-widest text-white bg-slate-900 dark:bg-slate-700 shadow-md">
+                    Current Plan
                 </div>
             )}
 
-            {/* Downgrade alert */}
-            {!isCurrent && isDowngrade && !compact && (
-                <div className="absolute top-3 left-3">
-                    <span className="flex items-center gap-1 text-[9px] font-bold px-2 py-1 rounded-full bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400">
-                        <RefreshCw size={9} /> Downgrade
-                    </span>
-                </div>
-            )}
-
-            <div className={`flex items-center gap-3 ${compact ? 'mb-3' : 'mb-4'}`}>
-                <div className={`w-10 h-10 rounded-2xl flex items-center justify-center bg-gradient-to-br ${tier.gradient} shadow-lg flex-shrink-0`}>
-                    <Icon size={18} className="text-white" />
-                </div>
-                <div>
-                    <p className="font-black text-slate-800 dark:text-white text-sm">{tier.label}</p>
-                </div>
-            </div>
-
-            <div className={compact ? 'mb-3' : 'mb-5'}>
-                {isFree ? (
-                    <p className="text-2xl font-black text-slate-800 dark:text-white">Free</p>
-                ) : quoteLoading || !quote ? (
-                    <div className="h-8 w-24 rounded-lg bg-slate-100 dark:bg-slate-700 animate-pulse" />
-                ) : (
-                    <div className="flex items-baseline gap-1 flex-wrap">
-                        <span className="text-2xl font-black text-slate-800 dark:text-white">
-                            {formatCurrency(quote.chargeAmount, quote.chargeCurrency)}
-                        </span>
-                        <span className="text-xs text-slate-400 font-medium">
-                            {billingCycle === 'annual' ? '/year' : '/month'}
-                        </span>
+            {/* Header & Pricing Section */}
+            <div>
+                <div className="flex items-center gap-3.5 mb-5">
+                    <div className={`w-12 h-12 rounded-2xl flex items-center justify-center bg-gradient-to-br ${plan.gradient} flex-shrink-0 shadow-md`}>
+                        <Icon size={20} className="text-white" />
                     </div>
-                )}
-                {!isFree && quote && (quote.institutionMultiplier !== 1 || quote.currencyMultiplier !== 1) && (
-                    <p className="text-[10px] text-slate-400 mt-1">
-                        Adjusted for {quote.institutionType} institutions in your region
-                    </p>
-                )}
-            </div>
+                    <div>
+                        <h4 className="text-lg font-black text-slate-800 dark:text-white leading-tight">
+                            {plan.label}
+                        </h4>
+                        <p className="text-xs text-slate-400 font-medium mt-0.5">
+                            {plan.seats?.students ? `${plan.seats.students} Students • ${plan.seats.teachers} Teachers` : 'Custom Seats'}
+                        </p>
+                    </div>
+                </div>
 
-            {!compact && (
-                <ul className="space-y-1.5 flex-1 mb-5">
-                    {tier.features.map((f) => (
-                        <li key={f} className="flex items-start gap-2 text-xs text-slate-600 dark:text-slate-300">
-                            <Check size={12} className="flex-shrink-0 mt-0.5" style={{ color: tier.accentColor }} />
-                            {f}
+                {/* Clear Pricing Hero */}
+                <div className="mb-6 p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-900/40 border border-slate-100 dark:border-slate-800/60">
+                    {/* Clear Pricing Hero */}
+                    <div className="mb-6 p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-900/40 border border-slate-100 dark:border-slate-800/60">
+                        {calculatedPrice === 0 ? (
+                            <p className="text-sm font-bold text-slate-500 dark:text-slate-400 py-1">
+                                Free Trial Package
+                            </p>
+                        ) : (
+                            <div>
+                                <div className="flex items-baseline gap-1">
+                                    <span className="text-2xl font-black text-slate-900 dark:text-white">
+                                        R{Math.round(calculatedPrice / CYCLE_MONTHS[billingCycle]).toLocaleString()}
+                                    </span>
+                                    <span className="text-xs font-bold text-slate-400">/month</span>
+                                </div>
+                                <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium mt-1">
+                                    {billingCycle === 'monthly'
+                                        ? 'Billed monthly'
+                                        : billingCycle === 'quarterly'
+                                            ? `Billed as R${calculatedPrice.toLocaleString()} every 3 months`
+                                            : `Billed as R${calculatedPrice.toLocaleString()} yearly`}
+                                </p>
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                {/* Feature List */}
+                <ul className="space-y-3 mb-6">
+                    {plan.features.map((f) => (
+                        <li key={f} className="flex items-start gap-2.5 text-xs text-slate-600 dark:text-slate-300 font-medium leading-relaxed">
+                            <CheckCircle2 size={15} style={{ color: plan.accentColor }} className="flex-shrink-0 mt-0.5" />
+                            <span>{f}</span>
                         </li>
                     ))}
                 </ul>
-            )}
+            </div>
 
-            <button
-                type="button"
-                disabled={isCurrent}
-                onClick={(e) => { e.stopPropagation(); handleClick(); }}
-                className={`w-full py-2.5 rounded-2xl text-xs font-black transition-all flex items-center justify-center gap-1.5 ${isCurrent ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 dark:bg-slate-700'
-                    }`}
-            >
-                {isCurrent ? <><Check size={12} /> Active</> : <>Select {tier.label} <ArrowRight size={11} /></>}
-            </button>
+            {/* Sticky Action Button */}
+            <div className="mt-auto pt-2">
+                {!isCurrent && (
+                    <button
+                        onClick={() => onSelect(plan.id)}
+                        className={`w-full flex items-center justify-center gap-2 py-3.5 rounded-2xl text-xs font-black transition-all shadow-md active:scale-[0.98] ${isUp
+                            ? 'text-white hover:opacity-95 shadow-indigo-500/10'
+                            : 'text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-700/80 hover:bg-slate-200 dark:hover:bg-slate-700'
+                            }`}
+                        style={isUp ? { background: `linear-gradient(135deg, ${plan.accentColor}, ${plan.accentColor}dd)` } : {}}
+                    >
+                        {isUp ? <ArrowUpRight size={14} /> : <ArrowDownRight size={14} />}
+                        {isUp ? `Upgrade to ${plan.label}` : `Downgrade to ${plan.label}`}
+                    </button>
+                )}
+                {isCurrent && (
+                    <div
+                        className="w-full flex items-center justify-center gap-2 py-3.5 rounded-2xl text-xs font-black text-white shadow-md"
+                        style={{ background: `linear-gradient(135deg, ${plan.accentColor}, ${plan.accentColor}dd)` }}
+                    >
+                        <CheckCircle2 size={14} /> Active Plan
+                    </div>
+                )}
+            </div>
         </div>
     );
 }
 
-export default function TierSelection({ selected, current, billingCycle = 'monthly', onSelect, compact = false, schoolId }) {
-    const [quotesByTier, setQuotesByTier] = useState({});
-    const [quotesLoading, setQuotesLoading] = useState(true);
-
-    useEffect(() => {
-        if (!schoolId) {
-            // No schoolId to price against (e.g. a marketing page before
-            // signup) - leave cards on their loading skeleton rather than
-            // guessing a price that might be wrong for the eventual buyer.
-            setQuotesLoading(false);
-            return;
-        }
-        let active = true;
-
-        async function loadQuotes() {
-            setQuotesLoading(true);
-            try {
-                const quotes = await fetchAllTierQuotes({ schoolId, billingCycle });
-                if (active) {
-                    const byTier = {};
-                    quotes.forEach((q) => { byTier[q.tierId] = q; });
-                    setQuotesByTier(byTier);
-                }
-            } catch (err) {
-                console.error('[TierSelection] Could not load price quotes', err);
-            } finally {
-                if (active) setQuotesLoading(false);
-            }
-        }
-
-        loadQuotes();
-        return () => { active = false; };
-    }, [schoolId, billingCycle]);
-
+// ─── MAIN TIER SELECTION GRID COMPONENT ──────────────────────────────────────
+export default function TierSelection({ selected, current, onSelect, billingCycle, studentCount, teacherCount }) {
     return (
-        <div className={`grid gap-4 ${compact ? 'grid-cols-2' : 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-5'}`}>
-            {TIERS.map((tier) => (
-                <TierCard
-                    key={tier.id}
-                    tier={tier}
-                    selected={selected}
-                    current={current}
-                    billingCycle={billingCycle}
-                    onSelect={onSelect}
-                    compact={compact}
-                    quote={quotesByTier[tier.id]}
-                    quoteLoading={quotesLoading}
-                />
-            ))}
+        <div className="py-2">
+            {/* 3 Columns x 2 Rows Grid Container */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {TIERS.map((plan) => (
+                    <PlanCard
+                        key={plan.id}
+                        plan={plan}
+                        currentTierId={current}
+                        onSelect={onSelect}
+                        billingCycle={billingCycle}
+                        studentCount={studentCount}
+                        teacherCount={teacherCount}
+                    />
+                ))}
+            </div>
         </div>
     );
 }

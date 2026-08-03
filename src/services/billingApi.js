@@ -1,19 +1,10 @@
 // services/billingApi.js
 //
-// The backend (pricing_engine.py + billing_routes.py) is the source of
-// truth for what a school actually gets charged - it derives the caller's
-// schoolId from their verified Firebase auth token (never from anything
-// this file sends), looks up their country/institution type itself,
-// applies the region/institution multipliers, and returns the amount to
-// send to PayFast. Every call here needs a valid ID token attached.
-//
-// ASSUMPTION: imports `auth` from '../utils/firebase' alongside the `db`
-// export your other files already use - if your actual Firebase Auth
-// instance is exported under a different name, adjust the one import line
-// below.
-//
-// ASSUMPTION: API_BASE points at your Flask backend via VITE_API_BASE_URL -
-// swap in your actual env var name if different.
+// The backend (billing_routes.py) is the source of truth for what a school
+// actually gets charged - it derives the caller's schoolId from their
+// verified Firebase auth token (never from anything this file sends), and
+// computes the price from students/teachers/billingCycle/additionalExamPacks.
+// Every call here needs a valid ID token attached.
 
 import { auth } from '../utils/firebase';
 
@@ -37,7 +28,7 @@ async function handleResponse(res) {
         throw new Error(body.error || `Request failed with status ${res.status}`);
     }
     const data = await res.json();
-    // ↓ add this — Flask jsonify(None) returns HTTP 200 with body `null`
+    // Flask jsonify(None) returns HTTP 200 with body `null`
     if (data === null || data === undefined) {
         throw new Error('Empty response from billing service — please try again.');
     }
@@ -61,21 +52,27 @@ export function formatCurrency(amount, currencyCode) {
     }
 }
 
-// Quote for a single tier - used right before showing the payment step.
-// `schoolId` is accepted for call-site compatibility but ignored - the
-// backend derives it from your auth token instead.
-export async function fetchPriceQuote({ tierId, billingCycle }) {
+// Quote for a specific seat count + cycle - used right before showing the
+// payment step. Matches billing_routes.py's /api/billing/quote contract:
+// POST { students, teachers, billingCycle, additionalExamPacks } →
+// { students, teachers, billingCycle, months, discountPercent,
+//   additionalExamPacks, addonExamPacksCost, monthlyEquivalent,
+//   subtotalBeforeDiscount, discountAmount, totalDueZar }
+export async function fetchPriceQuote({ students, teachers, billingCycle, additionalExamPacks = 0 }) {
     const headers = await getAuthHeaders();
     const res = await fetch(`${API_BASE}/api/billing/quote`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ tierId, billingCycle }),
+        body: JSON.stringify({ students, teachers, billingCycle, additionalExamPacks }),
     });
     return handleResponse(res);
 }
 
 // Quotes for ALL tiers at once, for the signed-in user's own school - used
 // on the tier-selection screen so it doesn't need 5 separate round trips.
+// NOTE: billing_routes.py does not currently implement this endpoint —
+// confirm /api/billing/quotes exists server-side before relying on this,
+// or call fetchPriceQuote once per tier from the client in the meantime.
 export async function fetchAllTierQuotes({ billingCycle }) {
     const headers = await getAuthHeaders();
     const params = new URLSearchParams({ billingCycle });
@@ -86,13 +83,18 @@ export async function fetchAllTierQuotes({ billingCycle }) {
 // Call this ONLY when the user clicks "Pay" - it creates the authoritative
 // pending transaction record server-side (so the ITN handler has something
 // real to verify against) and returns the exact fields to put in the
-// hidden PayFast form. Don't construct that form data yourself anymore.
-export async function initiatePayment({ tierId, billingCycle }) {
+// hidden PayFast form. Don't construct that form data yourself, and don't
+// send `amount` - the backend recalculates it from these seat/cycle inputs
+// so a tampered client can never influence what gets charged.
+// Matches billing_routes.py's /api/billing/initiate contract:
+// POST { students, teachers, billingCycle, additionalExamPacks } →
+// { paymentId, paymentData, quote }
+export async function initiatePayment({ students, teachers, billingCycle, additionalExamPacks = 0 }) {
     const headers = await getAuthHeaders();
     const res = await fetch(`${API_BASE}/api/billing/initiate`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ tierId, billingCycle }),
+        body: JSON.stringify({ students, teachers, billingCycle, additionalExamPacks }),
     });
     return handleResponse(res);
 }
