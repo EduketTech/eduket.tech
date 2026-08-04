@@ -6,12 +6,13 @@ import {
     getDocs, onSnapshot, serverTimestamp, addDoc, arrayUnion, getCountFromServer
 } from 'firebase/firestore';
 import { db } from '../utils/firebase';
-import { useState, useEffect, useCallback } from 'react';
-import { TIERS, getTierConfig } from './tierConfig';
+import { useState, useEffect } from 'react';
+import { calculateSubscriptionQuote } from '../utils/tierConfig';
 
 // ── Exam Audit ────────────────────────────────────────────────────────────────
 
-export async function updateExamStatusInAudit(examId, status, updatedBy) {
+export async function updateExamStatusInAudit(examId, status, updatedBy = 'System') {
+    if (!examId) throw new Error('[FirestoreHelpers] Cannot update status without a valid examId.');
     const examRef = doc(db, 'exams', examId);
     return await updateDoc(examRef, {
         status,
@@ -31,6 +32,7 @@ export async function updateExamInAudit(examId, status, operatorInfo = {}, custo
     const operatorUid = operatorInfo.uid || 'system-fallback';
     const operatorName = operatorInfo.name || 'Anonymous Staff';
     const displayMessage = customMessage || `Exam status transitioned to ${status}.`;
+
     return await updateDoc(examRef, {
         status,
         updatedAt: serverTimestamp(),
@@ -47,6 +49,8 @@ export async function updateExamInAudit(examId, status, operatorInfo = {}, custo
 // ── School ────────────────────────────────────────────────────────────────────
 
 export async function registerSchool(principalUid, schoolData) {
+    if (!principalUid) throw new Error('[FirestoreHelpers] Principal UID is required to register a school.');
+
     const schoolRef = doc(db, 'schools', principalUid);
     await setDoc(schoolRef, {
         ...schoolData,
@@ -73,6 +77,7 @@ export async function updateSchool(schoolId, data) {
 }
 
 export async function getSchool(schoolId) {
+    if (!schoolId) return null;
     const snap = await getDoc(doc(db, 'schools', schoolId));
     return snap.exists() ? { id: snap.id, ...snap.data() } : null;
 }
@@ -85,31 +90,36 @@ export async function listSchools() {
 // ── Users ─────────────────────────────────────────────────────────────────────
 
 export async function saveUserProfile(uid, role, profile) {
+    if (!uid || !role) throw new Error('[FirestoreHelpers] Missing UID or Role for user profile creation.');
     const col = role === 'principal' ? 'principals' : role === 'teacher' ? 'teachers' : 'students';
+
     await setDoc(doc(db, col, uid), {
         ...profile,
         uid,
         role,
         updatedAt: serverTimestamp(),
     }, { merge: true });
+
     await setDoc(doc(db, 'users', uid), { uid, role, schoolId: profile.schoolId }, { merge: true });
 }
 
 export async function getUserProfile(uid, role) {
+    if (!uid || !role) return null;
     const col = role === 'principal' ? 'principals' : role === 'teacher' ? 'teachers' : 'students';
     const snap = await getDoc(doc(db, col, uid));
     return snap.exists() ? { id: snap.id, ...snap.data() } : null;
 }
 
 export async function getUserRole(uid) {
+    if (!uid) return null;
     const snap = await getDoc(doc(db, 'users', uid));
     return snap.exists() ? snap.data().role : null;
 }
 
 // ── School Members ────────────────────────────────────────────────────────────
 
-/** All teachers belonging to a school */
 export function subscribeToSchoolTeachers(schoolId, callback) {
+    if (!schoolId) return () => { };
     const q = query(
         collection(db, 'teachers'),
         where('schoolId', '==', schoolId)
@@ -119,8 +129,8 @@ export function subscribeToSchoolTeachers(schoolId, callback) {
     });
 }
 
-/** All students belonging to a school */
 export function subscribeToSchoolStudents(schoolId, callback) {
+    if (!schoolId) return () => { };
     const q = query(
         collection(db, 'students'),
         where('schoolId', '==', schoolId)
@@ -131,6 +141,7 @@ export function subscribeToSchoolStudents(schoolId, callback) {
 }
 
 export async function getStudentsByGrade(schoolId, grade) {
+    if (!schoolId) return [];
     const q = query(
         collection(db, 'students'),
         where('schoolId', '==', schoolId),
@@ -141,6 +152,7 @@ export async function getStudentsByGrade(schoolId, grade) {
 }
 
 export async function getStudentsBySubject(schoolId, subject) {
+    if (!schoolId) return [];
     const q = query(
         collection(db, 'students'),
         where('schoolId', '==', schoolId),
@@ -159,17 +171,23 @@ export async function createExam(teacherUid, schoolId, examData) {
         schoolId,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
-        status: 'published',
+        status: examData.status || 'published',
     });
     return ref.id;
 }
 
+export function subscribeToStudentExams(schoolId, subjects = [], callback) {
+    if (!schoolId || !subjects.length) {
+        callback([]);
+        return () => { };
+    }
 
-export function subscribeToStudentExams(schoolId, subjects, callback) {
+    // Firestore 'in' query allows up to 10 elements max
+    const slice = subjects.slice(0, 10);
     const q = query(
         collection(db, 'exams'),
         where('schoolId', '==', schoolId),
-        where('subject', 'in', subjects.slice(0, 10)),
+        where('subject', 'in', slice),
         orderBy('createdAt', 'desc')
     );
     return onSnapshot(q, (snap) => {
@@ -177,31 +195,20 @@ export function subscribeToStudentExams(schoolId, subjects, callback) {
     });
 }
 
-export const processExams = (state) => {
-    const { attempts } = state; // Or attempts_data
-    return state.exams_data.map(exam => {
-        console.log(attempts);
-    });
-}
-
 export function subscribeToSchoolExams(schoolId, callback) {
+    if (!schoolId) return () => { };
     const q = query(
         collection(db, 'exams'),
         where('schoolId', '==', schoolId)
-        // removed orderBy('createdAt') — field may not exist on all docs
     );
 
     return onSnapshot(q, (snap) => {
         const exams = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        console.log('📚 exams loaded:', exams.length, exams);
-
-        // Removed the broken console.log referencing 'attempt'
-
         callback(exams);
+    }, (error) => {
+        console.error("❌ School exams listener error:", error);
     });
 }
-
-
 
 // ── Attempts ──────────────────────────────────────────────────────────────────
 
@@ -217,11 +224,13 @@ export async function saveAttempt(studentUid, examId, schoolId, attemptData) {
 }
 
 export async function getStudentAttempt(studentUid, examId) {
+    if (!studentUid || !examId) return null;
     const snap = await getDoc(doc(db, 'exam_attempts', `${studentUid}_${examId}`));
     return snap.exists() ? snap.data() : null;
 }
 
 export async function getExamAttempts(examId, schoolId) {
+    if (!examId || !schoolId) return [];
     const q = query(
         collection(db, 'exam_attempts'),
         where('examId', '==', examId),
@@ -232,6 +241,7 @@ export async function getExamAttempts(examId, schoolId) {
 }
 
 export function subscribeToStudentAttempts(studentUid, callback) {
+    if (!studentUid) return () => { };
     const q = query(
         collection(db, 'exam_attempts'),
         where('studentUid', '==', studentUid),
@@ -242,11 +252,6 @@ export function subscribeToStudentAttempts(studentUid, callback) {
     });
 }
 
-/**
- * Fetches attempts for a school by matching examIds.
- * Uses a live listener on exams, then one-time fetch of attempts.
- * Falls back gracefully when no exams exist.
- */
 export function subscribeToSchoolAttempts(schoolId, callback) {
     if (!schoolId) return () => { };
 
@@ -258,26 +263,16 @@ export function subscribeToSchoolAttempts(schoolId, callback) {
     return onSnapshot(
         q,
         (snap) => {
-            const attempts = snap.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data(),
+            const attempts = snap.docs.map(d => ({
+                id: d.id,
+                ...d.data(),
             }));
-
-            console.log("✅ School attempts:", attempts.length);
-
             callback(attempts);
         },
         (err) => {
-            console.error("❌ School attempts listener:", err);
+            console.error("❌ School attempts listener error:", err);
         }
     );
-}
-
-
-function chunkArray(arr, size) {
-    const chunks = [];
-    for (let i = 0; i < arr.length; i += size) chunks.push(arr.slice(i, i + size));
-    return chunks;
 }
 
 // ── Audit Log ─────────────────────────────────────────────────────────────────
@@ -291,6 +286,7 @@ export async function logMarkingEvent(schoolId, event) {
 }
 
 export function subscribeToAuditLog(schoolId, callback) {
+    if (!schoolId) return () => { };
     const q = query(
         collection(db, 'auditLog'),
         where('schoolId', '==', schoolId),
@@ -303,28 +299,27 @@ export function subscribeToAuditLog(schoolId, callback) {
 
 // ── Analytics Helpers ─────────────────────────────────────────────────────────
 
-export function countByGrade(students) {
+export function countByGrade(students = []) {
     return students.reduce((acc, s) => {
-        acc[s.grade] = (acc[s.grade] || 0) + 1;
+        const grade = s.grade || 'Unassigned';
+        acc[grade] = (acc[grade] || 0) + 1;
         return acc;
     }, {});
 }
 
-export function averageScore(attempts) {
+export function averageScore(attempts = []) {
     if (!attempts.length) return null;
     const scores = attempts.map((a) => a.percentage ?? a.score ?? 0);
     return Math.round(scores.reduce((sum, s) => sum + s, 0) / scores.length);
 }
 
-export function passRate(attempts) {
+export function passRate(attempts = []) {
     if (!attempts.length) return 0;
-    // NOTE: 40% is a placeholder threshold. Pass marks actually vary by
-    // subject/curriculum — this needs a proper lookup once that's designed.
     const passed = attempts.filter(a => (a.percentage ?? a.score ?? 0) >= 40).length;
     return Math.round((passed / attempts.length) * 100);
 }
 
-export function groupBySubject(attempts) {
+export function groupBySubject(attempts = []) {
     return attempts.reduce((acc, a) => {
         const s = a.subject || 'Unknown';
         if (!acc[s]) acc[s] = [];
@@ -333,13 +328,16 @@ export function groupBySubject(attempts) {
     }, {});
 }
 
+// ── Active Tier Hook & Limits ────────────────────────────────────────────────────
 
-// ── Active Tier Hook ─────────────────────────────────────────────────────────────
 export function useActiveTier(schoolId) {
     const [status, setStatus] = useState({ tier: 'free', loading: true });
 
     useEffect(() => {
-        if (!schoolId) { setStatus({ tier: 'free', loading: false }); return; }
+        if (!schoolId) {
+            setStatus({ tier: 'free', loading: false });
+            return;
+        }
 
         const q = query(
             collection(db, 'billing'),
@@ -351,10 +349,13 @@ export function useActiveTier(schoolId) {
         const unsub = onSnapshot(q, (snap) => {
             if (!snap.empty) {
                 const latest = snap.docs[0].data();
-                setStatus({ tier: latest.tier, loading: false });
+                setStatus({ tier: latest.tier || 'free', loading: false });
             } else {
                 setStatus({ tier: 'free', loading: false });
             }
+        }, (err) => {
+            console.error("❌ Tier listener error:", err);
+            setStatus({ tier: 'free', loading: false });
         });
 
         return () => unsub();
@@ -363,13 +364,13 @@ export function useActiveTier(schoolId) {
     return status;
 }
 
-export function getTierPrice(tierId, cycle) {
-    const tier = getTierConfig(tierId);
-    return cycle === 'annual' ? tier.annualPrice : tier.monthlyPrice;
+export function getSubscriptionPrice(students, teachers, cycle = 'annual') {
+    const quote = calculateSubscriptionQuote({ students, teachers, cycle });
+    return quote.totalDueNow;
 }
 
 export const getSchoolUserCount = async (schoolId, role) => {
-    // role should be 'teacher' or 'student'
+    if (!schoolId) return 0;
     const collectionName = role === 'teacher' ? 'teachers' : 'students';
     const q = query(collection(db, collectionName), where("schoolId", "==", schoolId));
 
@@ -377,9 +378,8 @@ export const getSchoolUserCount = async (schoolId, role) => {
     return snapshot.data().count;
 };
 
-export const calculateUsageStatus = (currentCount, tierId, role) => {
-    const tierConfig = getTierConfig(tierId);
-    const max = tierConfig.limits[role === 'teacher' ? 'teachers' : 'students'];
+export const calculateUsageStatus = (currentCount, maxSeats, role) => {
+    const max = maxSeats || 1;
     const used = currentCount || 0;
     const pct = Math.round((used / max) * 100);
 

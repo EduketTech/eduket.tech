@@ -1,17 +1,26 @@
-import { Star, Zap, Sparkles, Crown, Gem } from 'lucide-react';
 import { onSnapshot, doc } from "firebase/firestore";
 import { db } from "./firebase";
 import { useState, useEffect, useMemo } from "react";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BACKEND-ALIGNED PRICING CONSTANTS (ZAR)
+// BASELINE & PRICING CONSTANTS (ZAR)
 // ─────────────────────────────────────────────────────────────────────────────
+export const FREE_STUDENT_BASE = 10;
+export const FREE_TEACHER_BASE = 2;
+
 export const PRICING_RATES = {
-    studentMonthly: 72.0,
+    studentMonthly: 32.0,
     teacherMonthly: 105.0,
     basePlatformMonthly: 500.0,
     extraExamPackPrice: 150.0,
     extraExamPackSize: 10,
+};
+
+export const UNIT_PRICES = {
+    studentPerMonth: PRICING_RATES.studentMonthly,
+    teacherPerMonth: PRICING_RATES.teacherMonthly,
+    basePlatformPerMonth: PRICING_RATES.basePlatformMonthly,
+    uploadsPerTeacher: 2,
 };
 
 export const DISCOUNTS = {
@@ -29,10 +38,17 @@ export const CYCLE_MONTHS = {
 // Seat quota constants
 export const DEFAULT_EXAMS_PER_STUDENT = 2;   // Monthly exam uploads per student seat
 export const DEFAULT_EXAMS_PER_TEACHER = 2;   // Monthly exam uploads per teacher seat
-export const FREE_TIER_MONTHLY_LIMIT = 4;    // Free/trial tier default monthly exam quota
+export const FREE_TIER_MONTHLY_LIMIT = 4;    // Free trial baseline monthly exam quota
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SUBSCRIPTION QUOTE ENGINE (Exact match to Python calculate_subscription_quote)
+// BASELINE HELPER
+// ─────────────────────────────────────────────────────────────────────────────
+export function isFreeTrialBaseline(students = 0, teachers = 0) {
+    return students <= FREE_STUDENT_BASE && teachers <= FREE_TEACHER_BASE;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DYNAMIC SUBSCRIPTION QUOTE ENGINE
 // ─────────────────────────────────────────────────────────────────────────────
 export function calculateSubscriptionQuote({
     students = 0,
@@ -43,17 +59,27 @@ export function calculateSubscriptionQuote({
     const months = CYCLE_MONTHS[cycle] || 12;
     const discount = DISCOUNTS[cycle] ?? 0.10;
 
-    // Monthly un-discounted costs
-    const monthlyStudents = students * PRICING_RATES.studentMonthly;
-    const monthlyTeachers = teachers * PRICING_RATES.teacherMonthly;
-    const monthlyBase = PRICING_RATES.basePlatformMonthly;
+    // Check if within free baseline limits
+    const isBaseline = isFreeTrialBaseline(students, teachers);
 
-    const monthlySubtotal = monthlyBase + monthlyStudents + monthlyTeachers;
-    const periodSubtotal = monthlySubtotal * months;
+    let monthlySubtotal = 0;
+    let periodSubtotal = 0;
+    let discountAmount = 0;
+    let periodTotal = 0;
 
-    // Apply cycle discount (Quarterly 5%, Annual 10%)
-    const discountAmount = periodSubtotal * discount;
-    const periodTotal = periodSubtotal - discountAmount;
+    if (!isBaseline) {
+        // Calculate charges for custom seats
+        const monthlyStudents = calculateTieredStudentCost(students).totalCost;
+        const monthlyTeachers = teachers * PRICING_RATES.teacherMonthly;
+        const monthlyBase = PRICING_RATES.basePlatformMonthly;
+
+        monthlySubtotal = monthlyBase + monthlyStudents + monthlyTeachers;
+        periodSubtotal = monthlySubtotal * months;
+
+        // Apply cycle discount (Quarterly 5%, Annual 10%)
+        discountAmount = periodSubtotal * discount;
+        periodTotal = periodSubtotal - discountAmount;
+    }
 
     // Optional AI Exam Add-ons
     const addonCost = additionalExamPacks * PRICING_RATES.extraExamPackPrice;
@@ -64,146 +90,71 @@ export function calculateSubscriptionQuote({
         months,
         studentSeats: students,
         teacherSeats: teachers,
-        monthlyEquivalent: Math.round((totalDue / months) * 100) / 100,
+        isFreeBaseline: isBaseline,
+        monthlyEquivalent: isBaseline ? 0 : Math.round((totalDue / months) * 100) / 100,
         subtotalBeforeDiscount: Math.round(periodSubtotal * 100) / 100,
         discountApplied: Math.round(discountAmount * 100) / 100,
         addonExamPacksCost: Math.round(addonCost * 100) / 100,
         totalDueNow: Math.round(totalDue * 100) / 100,
+        periodTotal: Math.round(periodTotal * 100) / 100,
     };
 }
 
 /**
- * Calculates prorated seat additions mid-subscription (Mirrors Python calculate_prorated_user_addon)
+ * Custom Usage Quote Wrapper for UI cards & checkout flows
  */
-export function calculateProratedUserAddon({
-    currentSeats = 0,
-    additionalSeats = 0,
-    seatType = 'student', // 'student' or 'teacher'
-    cycle = 'annual',
-    daysRemaining = 30,
-    totalDaysInPeriod = 365
-}) {
-    const ratePerMonth = seatType === 'student' ? PRICING_RATES.studentMonthly : PRICING_RATES.teacherMonthly;
-    const months = CYCLE_MONTHS[cycle] || 12;
-    const discount = DISCOUNTS[cycle] ?? 0.10;
+export function calculateCustomUsageQuote(studentCount = 0, teacherCount = 0, billingCycle = 'monthly') {
+    const quote = calculateSubscriptionQuote({
+        students: studentCount,
+        teachers: teacherCount,
+        cycle: billingCycle,
+    });
 
-    const fullPeriodCost = (additionalSeats * ratePerMonth * months) * (1 - discount);
-    const proratedAmount = (daysRemaining / totalDaysInPeriod) * fullPeriodCost;
+    const monthlyUploadLimit = Math.max(
+        (studentCount * DEFAULT_EXAMS_PER_STUDENT) + (teacherCount * DEFAULT_EXAMS_PER_TEACHER),
+        FREE_TIER_MONTHLY_LIMIT
+    );
 
     return {
-        seatType,
-        newSeatsAdded: additionalSeats,
+        studentCount,
+        teacherCount,
+        billingCycle,
+        isFreeBaseline: quote.isFreeBaseline,
+        monthlyEquivalent: quote.monthlyEquivalent,
+        periodTotal: quote.periodTotal,
+        totalCost: quote.totalDueNow,
+        discountPercent: Math.round((DISCOUNTS[billingCycle] || 0) * 100),
+        monthlyUploadLimit,
+    };
+}
+
+/**
+ * Calculates prorated seat additions mid-subscription
+ */
+export function calculateProratedUserAddon({
+    currentSeats = 0, additionalSeats = 0, seatType = 'student',
+    cycle = 'annual', daysRemaining = 30, totalDaysInPeriod = 365
+}) {
+    const months = CYCLE_MONTHS[cycle] || 12;
+    const discount = DISCOUNTS[cycle] ?? 0.10;
+    let fullPeriodCost;
+
+    if (seatType === 'student') {
+        const oldCost = calculateTieredStudentCost(currentSeats).totalCost;
+        const newCost = calculateTieredStudentCost(currentSeats + additionalSeats).totalCost;
+        const marginalMonthlyCost = newCost - oldCost;
+        fullPeriodCost = (marginalMonthlyCost * months) * (1 - discount);
+    } else {
+        fullPeriodCost = (additionalSeats * PRICING_RATES.teacherMonthly * months) * (1 - discount);
+    }
+
+    const proratedAmount = (daysRemaining / totalDaysInPeriod) * fullPeriodCost;
+    return {
+        seatType, newSeatsAdded: additionalSeats,
         totalSeatsAfterUpdate: currentSeats + additionalSeats,
         daysRemaining,
         proratedAmountDue: Math.round(Math.max(proratedAmount, 0) * 100) / 100,
     };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// PRESET SEAT PACKAGES (Calculated dynamically using backend rates)
-// ─────────────────────────────────────────────────────────────────────────────
-const calcMonthly = (s, t) => calculateSubscriptionQuote({ students: s, teachers: t, cycle: 'monthly' }).totalDueNow;
-const calcAnnual = (s, t) => calculateSubscriptionQuote({ students: s, teachers: t, cycle: 'annual' }).totalDueNow;
-
-export const TIERS = [
-    {
-        id: 'free',
-        label: 'Free Trial',
-        basePrice: 0,
-        monthlyPrice: 0,
-        annualPrice: 0,
-        perSeatStudentRate: 0,
-        perSeatTeacherRate: 0,
-        includedStudents: 10,
-        includedTeachers: 2,
-        icon: Star,
-        gradient: 'from-slate-400 to-slate-500',
-        gradientBg: 'from-slate-50 to-slate-100 dark:from-slate-800 dark:to-slate-750',
-        accentColor: '#64748b',
-        seats: { students: 10, teachers: 2 },
-        features: ['10 Student seats', '2 Teacher seats', '4 Monthly exam uploads', 'Basic AI marking'],
-    },
-    {
-        id: 'starter',
-        label: 'Starter',
-        basePrice: PRICING_RATES.basePlatformMonthly,
-        monthlyPrice: calcMonthly(50, 2),
-        annualPrice: calcAnnual(50, 2),
-        perSeatStudentRate: PRICING_RATES.studentMonthly,
-        perSeatTeacherRate: PRICING_RATES.teacherMonthly,
-        includedStudents: 50,
-        includedTeachers: 2,
-        icon: Zap,
-        gradient: 'from-blue-500 to-cyan-500',
-        gradientBg: 'from-blue-50 to-cyan-50 dark:from-blue-900/20 dark:to-cyan-900/20',
-        accentColor: '#3b82f6',
-        seats: { students: 50, teachers: 2 },
-        features: ['50 Student seats', '2 Teacher seats', '104 Monthly exam uploads', 'Audit log', 'Advanced AI marking'],
-    },
-    {
-        id: 'growth',
-        label: 'Growth',
-        basePrice: PRICING_RATES.basePlatformMonthly,
-        monthlyPrice: calcMonthly(150, 5),
-        annualPrice: calcAnnual(150, 5),
-        perSeatStudentRate: PRICING_RATES.studentMonthly,
-        perSeatTeacherRate: PRICING_RATES.teacherMonthly,
-        includedStudents: 150,
-        includedTeachers: 5,
-        icon: Sparkles,
-        gradient: 'from-violet-500 to-purple-600',
-        gradientBg: 'from-violet-50 to-purple-50 dark:from-violet-900/20 dark:to-purple-900/20',
-        accentColor: '#8b5cf6',
-        seats: { students: 150, teachers: 5 },
-        features: ['150 Student seats', '5 Teacher seats', '310 Monthly exam uploads', 'Full audit log', 'Advanced analytics'],
-        popular: true,
-    },
-    {
-        id: 'institution',
-        label: 'Institution',
-        basePrice: PRICING_RATES.basePlatformMonthly,
-        monthlyPrice: calcMonthly(500, 15),
-        annualPrice: calcAnnual(500, 15),
-        perSeatStudentRate: PRICING_RATES.studentMonthly,
-        perSeatTeacherRate: PRICING_RATES.teacherMonthly,
-        includedStudents: 500,
-        includedTeachers: 15,
-        icon: Crown,
-        gradient: 'from-amber-400 to-orange-500',
-        gradientBg: 'from-amber-50 to-orange-50 dark:from-amber-900/20 dark:to-orange-900/20',
-        accentColor: '#f59e0b',
-        seats: { students: 500, teachers: 15 },
-        features: ['500 Student seats', '15 Teacher seats', '1,030 Monthly exam uploads', 'Full audit log', 'Advanced analytics', 'Priority email support'],
-    },
-    {
-        id: 'enterprise',
-        label: 'Enterprise',
-        basePrice: PRICING_RATES.basePlatformMonthly,
-        monthlyPrice: calcMonthly(1000, 20),
-        annualPrice: calcAnnual(1000, 20),
-        perSeatStudentRate: PRICING_RATES.studentMonthly,
-        perSeatTeacherRate: PRICING_RATES.teacherMonthly,
-        includedStudents: 1000,
-        includedTeachers: 20,
-        icon: Gem,
-        gradient: 'from-cyan-400 to-indigo-600',
-        gradientBg: 'from-cyan-50 to-indigo-50 dark:from-cyan-900/20 dark:to-indigo-900/20',
-        accentColor: '#22d3ee',
-        seats: { students: 1000, teachers: 20 },
-        features: ['1000 Student seats', '20 Teacher seats', '2,040 Monthly exam uploads', 'Parent dashboard', 'Dedicated account manager', 'Custom AI model tuning'],
-    }
-];
-
-export const TIER_ORDER = ['free', 'starter', 'growth', 'institution', 'enterprise'];
-
-// ─── TIER HELPERS & FEATURE GATES ───────────────────────────────────────────
-
-export function getTierConfig(tierId = 'free') {
-    const normalized = tierId?.toLowerCase() || 'free';
-    const legacyMap = { silver: 'starter', gold: 'growth', platinum: 'enterprise' };
-    const targetId = legacyMap[normalized] || normalized;
-
-    return TIERS.find(t => t.id === targetId) || TIERS[0];
 }
 
 export function getSchoolExamLimit(seats = {}) {
@@ -218,34 +169,9 @@ export function getSchoolExamLimit(seats = {}) {
     return Math.max(calculated, FREE_TIER_MONTHLY_LIMIT);
 }
 
-export const TIER_FEATURE_FLAGS = {
-    enterprise: { parentDashboard: true },
-    institution: { prioritySupport: true },
-    growth: { advancedAnalytics: true },
-};
-
-export function hasFeature(tierId, flagKey) {
-    const config = getTierConfig(tierId);
-    return Boolean(TIER_FEATURE_FLAGS[config.id]?.[flagKey]);
-}
-
-export function canAccessParentDashboard(tierId) {
-    return hasFeature(tierId, 'parentDashboard');
-}
-
-export function isFeatureAllowed(tierId, featureKey) {
-    const config = getTierConfig(tierId);
-    const levelIndex = TIER_ORDER.indexOf(config.id);
-    const requiredIndex = TIER_ORDER.indexOf(featureKey?.toLowerCase());
-
-    if (requiredIndex !== -1) {
-        return levelIndex >= requiredIndex;
-    }
-
-    return hasFeature(tierId, featureKey);
-}
-
-// ─── INSTANCE MULTIPLIERS & USAGE HELPERS ───────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// INSTANCE MULTIPLIERS & USAGE HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
 
 export const INSTITUTION_TYPES = {
     PRIMARY: 'primary',
@@ -286,28 +212,16 @@ export function getUsagePercent(currentCount, maxLimit) {
     return Math.min(Math.round((currentCount / maxLimit) * 100), 100);
 }
 
-export function isUpgrade(currentTierId, newTierId) {
-    return TIER_ORDER.indexOf(newTierId) > TIER_ORDER.indexOf(currentTierId);
-}
-
-export function getTierPrice(tierId, options = {}) {
-    const { studentCount = 0, teacherCount = 0, billingCycle = 'annual', additionalExamPacks = 0 } = options;
-    const quote = calculateSubscriptionQuote({
-        students: studentCount,
-        teachers: teacherCount,
-        cycle: billingCycle,
-        additionalExamPacks
-    });
-    return quote.totalDueNow;
-}
-
-// ─── REACT HOOKS ──────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// REACT HOOKS
+// ─────────────────────────────────────────────────────────────────────────────
 
 export function useCurrentSubscription(schoolId) {
     const [subscription, setSubscription] = useState({
         status: 'unpaid',
-        seats: { students: 0, teachers: 0 },
+        seats: { students: FREE_STUDENT_BASE, teachers: FREE_TEACHER_BASE },
         examLimit: FREE_TIER_MONTHLY_LIMIT,
+        isFreeBaseline: true,
         loading: true,
     });
 
@@ -320,20 +234,26 @@ export function useCurrentSubscription(schoolId) {
         const unsubscribe = onSnapshot(doc(db, 'subscriptions', schoolId), (docSnap) => {
             if (docSnap.exists()) {
                 const data = docSnap.data();
-                const seats = data.seats || { students: data.studentCount || 0, teachers: data.teacherCount || 0 };
+                const seats = data.seats || {
+                    students: data.studentCount ?? FREE_STUDENT_BASE,
+                    teachers: data.teacherCount ?? FREE_TEACHER_BASE
+                };
                 const examLimit = data.customExamLimit ?? getSchoolExamLimit(seats);
+                const baseline = isFreeTrialBaseline(seats.students, seats.teachers);
 
                 setSubscription({
                     status: data.status || 'unpaid',
                     seats,
                     examLimit,
+                    isFreeBaseline: baseline,
                     loading: false,
                 });
             } else {
                 setSubscription({
                     status: 'unpaid',
-                    seats: { students: 10, teachers: 2 },
+                    seats: { students: FREE_STUDENT_BASE, teachers: FREE_TEACHER_BASE },
                     examLimit: FREE_TIER_MONTHLY_LIMIT,
+                    isFreeBaseline: true,
                     loading: false,
                 });
             }
@@ -348,23 +268,20 @@ export function useCurrentSubscription(schoolId) {
     return subscription;
 }
 
-export function useCurrentTier(schoolData = {}) {
+export function useCurrentSubscriptionDetails(schoolData = {}) {
     return useMemo(() => {
-        const tierId = schoolData?.tier || 'free';
-        const config = getTierConfig(tierId);
+        const studentCount = schoolData?.studentLimit ?? schoolData?.studentCount ?? FREE_STUDENT_BASE;
+        const teacherCount = schoolData?.teacherLimit ?? schoolData?.teacherCount ?? FREE_TEACHER_BASE;
+        const isFree = isFreeTrialBaseline(studentCount, teacherCount);
 
         return {
-            tierId: config.id,
-            config,
-            isFree: config.id === 'free',
-            isEnterprise: config.id === 'enterprise',
-            studentLimit: schoolData?.studentLimit ?? schoolData?.studentCount ?? config.seats.students,
-            teacherLimit: schoolData?.teacherLimit ?? schoolData?.teacherCount ?? config.seats.teachers,
+            isFreeBaseline: isFree,
+            studentLimit: studentCount,
+            teacherLimit: teacherCount,
             billingCycle: schoolData?.billingCycle || 'annual',
             status: schoolData?.subscriptionStatus || 'active',
         };
     }, [
-        schoolData?.tier,
         schoolData?.studentLimit,
         schoolData?.studentCount,
         schoolData?.teacherLimit,
@@ -372,4 +289,44 @@ export function useCurrentTier(schoolData = {}) {
         schoolData?.billingCycle,
         schoolData?.subscriptionStatus
     ]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GRADUATED STUDENT SEAT PRICING (volume discount above free baseline)
+// ─────────────────────────────────────────────────────────────────────────────
+export const STUDENT_PRICE_TIERS = [
+    { upTo: 150, rate: 32 },   // paid seats 1–150
+    { upTo: 500, rate: 26 },   // paid seats 151–500
+    { upTo: 1000, rate: 20 },  // paid seats 501–1000
+    { upTo: Infinity, rate: 16 }, // paid seats 1001+
+];
+
+export function calculateTieredStudentCost(totalStudents) {
+    const total = Math.max(FREE_STUDENT_BASE, parseInt(totalStudents, 10) || FREE_STUDENT_BASE);
+    const paidStudents = total - FREE_STUDENT_BASE;
+
+    if (paidStudents <= 0) {
+        return { totalCost: 0, effectiveRate: 0, paidStudents: 0, activeTierLabel: 'Free Trial (10 Seats)' };
+    }
+
+    let remaining = paidStudents;
+    let prevCap = 0;
+    let totalCost = 0;
+
+    for (const { upTo, rate } of STUDENT_PRICE_TIERS) {
+        if (remaining <= 0) break;
+        const tierCapacity = upTo - prevCap;
+        const seatsInTier = Math.min(remaining, tierCapacity);
+        totalCost += seatsInTier * rate;
+        remaining -= seatsInTier;
+        prevCap = upTo;
+    }
+
+    const effectiveRate = (totalCost / total).toFixed(2);
+    let activeTierLabel = 'R32/paid seat';
+    if (paidStudents > 1000) activeTierLabel = 'Enterprise Tier (R16/seat floor)';
+    else if (paidStudents > 500) activeTierLabel = 'Tier 3 Volume (R20/seat)';
+    else if (paidStudents > 150) activeTierLabel = 'Tier 2 Volume (R26/seat)';
+
+    return { totalCost, effectiveRate, paidStudents, activeTierLabel };
 }

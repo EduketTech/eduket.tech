@@ -1,8 +1,8 @@
-// ─── SchoolRegistration.jsx (Global Edition — AI-resolved academics) ────────
+// ─── SchoolRegistration.jsx (Global Edition — AI-resolved academics & dynamic pricing) ────────
 // Layout: flex-col card with scrollable middle section, sticky bottom nav.
-// Curricula, provinces, districts, levels, phases, and subjects are now
-// resolved dynamically per-country/curriculum via Groq (see academicResolver.js)
-// instead of static lookup tables.
+// Curricula, provinces, districts, levels, phases, and subjects are resolved
+// dynamically per-country/curriculum via Groq (academicResolver.js).
+// Subscriptions use dynamic baseline & custom seat controls instead of hardcoded tiers.
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
@@ -12,12 +12,11 @@ import { auth, db, storage } from '../utils/firebase';
 import {
     School, Palette, BookOpen, CheckCircle2, ArrowRight,
     Loader2, X, Image as ImageIcon, Layers, Search, ChevronDown, Save,
-    AlertTriangle, RefreshCw, GraduationCap, MapPin
+    AlertTriangle, RefreshCw, GraduationCap, MapPin, Users, CreditCard, ShieldCheck
 } from 'lucide-react';
-import TierSelection from './TierSelection';
 import PaymentManager from './PaymentManager';
 import { COUNTRIES, getCountry, detectDefaultCountry } from '../utils/countries';
-import { getTierConfig } from '../utils/tierConfig';
+import { FREE_STUDENT_BASE, FREE_TEACHER_BASE, isFreeTrialBaseline } from '../utils/tierConfig';
 import {
     fetchCountryCurriculumOptions,
     fetchProvinces,
@@ -39,13 +38,10 @@ const STEPS = [
     { num: 1, label: 'Identity', icon: School },
     { num: 2, label: 'Branding', icon: Palette },
     { num: 3, label: 'Academics', icon: BookOpen },
-    { num: 4, label: 'Plan', icon: Layers },
+    { num: 4, label: 'Plan & Seats', icon: Layers },
 ];
 
 // ─── GENERIC AI-FETCH HOOK ────────────────────────────────────────────────────
-// Drives loading/error/empty/data states for any of the academicResolver calls.
-// `deps` are the values the fetch depends on — when any is missing/falsy, the
-// fetch is skipped (e.g. don't fetch districts before a province is chosen).
 
 export function useAiList(fetchFn, deps, enabled = true) {
     const [data, setData] = useState([]);
@@ -104,7 +100,7 @@ export function useAiList(fetchFn, deps, enabled = true) {
     return { data, loading, error, retry };
 }
 
-// ─── AI LIST STATUS ROW (loading / error / retry — shared visual) ────────────
+// ─── AI LIST STATUS ROW ───────────────────────────────────────────────────────
 
 function AiListStatus({ loading, error, onRetry, loadingLabel }) {
     if (loading) {
@@ -159,7 +155,7 @@ function CountryPicker({ value, onChange }) {
             <button
                 type="button"
                 onClick={() => { setOpen((o) => !o); setTimeout(() => inputRef.current?.focus(), 50); }}
-                className="if flex items-center gap-3 cursor-pointer text-left"
+                className="if flex items-center gap-3 cursor-pointer text-left w-full"
             >
                 <span className="text-2xl leading-none">{selected?.flag || '🌍'}</span>
                 <span className="flex-1 text-sm font-medium text-slate-800 dark:text-white">
@@ -203,7 +199,7 @@ function CountryPicker({ value, onChange }) {
     );
 }
 
-// ─── PHONE INPUT WITH DIAL CODE ────────────────────────────────────────────────
+// ─── PHONE INPUT ──────────────────────────────────────────────────────────────
 
 function PhoneInput({ countryCode, value, onChange }) {
     const country = getCountry(countryCode);
@@ -225,10 +221,7 @@ function PhoneInput({ countryCode, value, onChange }) {
     );
 }
 
-// ─── REGION FIELD (AI-resolved provinces) ─────────────────────────────────────
-// Replaces the static utils/countries.js regions array — provinces are now
-// fetched live from Groq for the selected country, with a free-text fallback
-// if the fetch fails or returns nothing.
+// ─── REGION FIELD ─────────────────────────────────────────────────────────────
 
 function RegionField({ country, value, onChange }) {
     const label = country?.regionLabel || 'State / Region';
@@ -267,7 +260,7 @@ function RegionField({ country, value, onChange }) {
     );
 }
 
-// ─── DISTRICT FIELD (AI-resolved, depends on province) ────────────────────────
+// ─── DISTRICT FIELD ───────────────────────────────────────────────────────────
 
 function DistrictField({ country, province, value, onChange }) {
     const { data: districts, loading, error, retry } = useAiList(
@@ -303,7 +296,7 @@ function DistrictField({ country, province, value, onChange }) {
     );
 }
 
-// ─── CURRICULA PICKER (AI-resolved, replaces static CURRICULA_GLOBAL) ─────────
+// ─── CURRICULA PICKER ─────────────────────────────────────────────────────────
 
 function CurriculaPicker({ country, selected, onToggle, primary, customCurriculum, setCustomCurriculum, addCustomCurriculum }) {
     const { data: curriculaOptions, loading, error, retry } = useAiList(
@@ -341,7 +334,6 @@ function CurriculaPicker({ country, selected, onToggle, primary, customCurriculu
                 </div>
             )}
 
-            {/* Custom curriculum input — always available regardless of AI result */}
             <div className="mt-3 flex gap-2">
                 <input
                     type="text" value={customCurriculum}
@@ -357,7 +349,6 @@ function CurriculaPicker({ country, selected, onToggle, primary, customCurriculu
                 </button>
             </div>
 
-            {/* Chips for any curriculum not in the AI-fetched list (custom or stale) */}
             {selected.filter((c) => !curriculaOptions.includes(c)).length > 0 && (
                 <div className="flex flex-wrap gap-2 mt-3">
                     {selected.filter((c) => !curriculaOptions.includes(c)).map((c) => (
@@ -376,7 +367,7 @@ function CurriculaPicker({ country, selected, onToggle, primary, customCurriculu
     );
 }
 
-// ─── TEACHING PHASE PICKER (AI-resolved, depends on country + primary curriculum) ──
+// ─── TEACHING PHASE PICKER ────────────────────────────────────────────────────
 
 function PhasePicker({ country, curriculum, selected, onToggle, primary }) {
     const { data: phases, loading, error, retry } = useAiList(
@@ -413,7 +404,7 @@ function PhasePicker({ country, curriculum, selected, onToggle, primary }) {
     );
 }
 
-// ─── ACADEMIC LEVELS PICKER (AI-resolved, depends on country + curriculum) ────
+// ─── ACADEMIC LEVELS PICKER ───────────────────────────────────────────────────
 
 function LevelsPicker({ country, curriculum, selected, onToggle, primary }) {
     const { data: levels, loading, error, retry } = useAiList(
@@ -450,7 +441,7 @@ function LevelsPicker({ country, curriculum, selected, onToggle, primary }) {
     );
 }
 
-// ─── SUBJECTS PICKER (AI-resolved, depends on country + curriculum + a phase) ──
+// ─── SUBJECTS PICKER ──────────────────────────────────────────────────────────
 
 function SubjectsPicker({ country, curriculum, phase, selected, onToggle, primary }) {
     const { data: subjects, loading, error, retry } = useAiList(
@@ -511,41 +502,35 @@ export default function SchoolRegistration({ principalProfile, onComplete }) {
     const [logoPreview, setLogoPreview] = useState(null);
     const logoInputRef = useRef();
 
-    // Step 3 — academics (all AI-resolved now)
+    // Step 3 — academics
     const [curricula, setCurricula] = useState(seed.curricula || []);
     const [customCurriculum, setCustomCurriculum] = useState('');
-    const [primaryCurriculum, setPrimaryCurriculum] = useState(''); // drives levels/phases/subjects
+    const [primaryCurriculum, setPrimaryCurriculum] = useState('');
     const [phases, setPhases] = useState([]);
-    const [primaryPhase, setPrimaryPhase] = useState(''); // drives subjects
+    const [primaryPhase, setPrimaryPhase] = useState('');
     const [levels, setLevels] = useState([]);
     const [subjects, setSubjects] = useState([]);
 
-    // Step 4
-    const [selectedTier, setSelectedTier] = useState('free');
+    // Step 4 — dynamic custom pricing inputs
+    const [studentCount, setStudentCount] = useState(FREE_STUDENT_BASE);
+    const [teacherCount, setTeacherCount] = useState(FREE_TEACHER_BASE);
     const [showPayment, setShowPayment] = useState(false);
-    const [pendingUpgradeTier, setPendingUpgradeTier] = useState(null);
 
-    // UI
+    // UI State
     const [step, setStep] = useState(1);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [isSavingDraft, setIsSavingDraft] = useState(false);
     const [error, setError] = useState('');
 
     const country = getCountry(countryCode);
+    const isBaseline = isFreeTrialBaseline(studentCount, teacherCount);
 
-    // Reset region/district when country changes
+    // Dynamic state listeners & dependency resets
     useEffect(() => { setRegion(''); setDistrict(''); }, [countryCode]);
-    // Reset district when province changes
     useEffect(() => { setDistrict(''); }, [region]);
-    // Reset downstream academic selections when primary curriculum changes
-    useEffect(() => {
-        setPhases([]); setPrimaryPhase(''); setLevels([]); setSubjects([]);
-    }, [primaryCurriculum]);
-    // Reset subjects when primary phase changes
+    useEffect(() => { setPhases([]); setPrimaryPhase(''); setLevels([]); setSubjects([]); }, [primaryCurriculum]);
     useEffect(() => { setSubjects([]); }, [primaryPhase]);
 
-    // Keep primaryCurriculum valid — clear it if it's removed from the selected list,
-    // and auto-pick the first selected curriculum if none is set yet.
     useEffect(() => {
         if (primaryCurriculum && !curricula.includes(primaryCurriculum)) {
             setPrimaryCurriculum(curricula[0] || '');
@@ -589,7 +574,6 @@ export default function SchoolRegistration({ principalProfile, onComplete }) {
     const togglePhase = (p) =>
         setPhases((prev) => {
             const next = prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p];
-            // first phase ever added becomes the active one driving subjects, if none set
             if (!primaryPhase && next.includes(p)) setPrimaryPhase(p);
             return next;
         });
@@ -600,18 +584,6 @@ export default function SchoolRegistration({ principalProfile, onComplete }) {
     const toggleSubject = (s) =>
         setSubjects((prev) => prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]);
 
-    const handleTierSelect = (tierId) => {
-        if (tierId === 'free') { setSelectedTier('free'); return; }
-        setPendingUpgradeTier(tierId);
-        setShowPayment(true);
-    };
-
-    const handlePaymentSuccess = (tierId) => {
-        setSelectedTier(tierId);
-        setShowPayment(false);
-        setPendingUpgradeTier(null);
-    };
-
     const canProceed = () => {
         if (step === 1) return schoolName.trim().length > 0 && !!countryCode;
         if (step === 3) return curricula.length > 0;
@@ -621,7 +593,6 @@ export default function SchoolRegistration({ principalProfile, onComplete }) {
     const goNext = () => { if (canProceed()) setStep((s) => s + 1); };
     const goBack = () => setStep((s) => s - 1);
 
-    // Combined payload helper used for save-and-exit or complete submission
     const buildRegistrationPayload = async (uid) => {
         let logoUrl = null;
         if (logoFile && storage) {
@@ -651,14 +622,15 @@ export default function SchoolRegistration({ principalProfile, onComplete }) {
             teachingPhases: phases,
             academicLevels: levels,
             subjects,
-            tier: selectedTier,
+            studentLimit: Number(studentCount) || FREE_STUDENT_BASE,
+            teacherLimit: Number(teacherCount) || FREE_TEACHER_BASE,
+            tier: isBaseline ? 'free' : 'custom',
             tierUpdatedAt: serverTimestamp(),
             principalUid: uid,
             updatedAt: serverTimestamp(),
         };
     };
 
-    // Intermediate Action: Save draft data and send back to dashboard
     const handleSaveAndCompleteLater = async () => {
         const uid = auth.currentUser?.uid || principalProfile?.uid || seed.principalUid;
         if (!uid) { setError('User state validation failed. Cannot save draft.'); return; }
@@ -719,252 +691,158 @@ export default function SchoolRegistration({ principalProfile, onComplete }) {
         }
     };
 
-    // ─────────────────────────────────────────────────────────────────────────
     return (
         <>
-            {/* Full-page background */}
-            <div
-                className="fixed inset-0 w-screen h-screen flex items-center justify-center p-4 overflow-hidden"
-                style={{ background: `linear-gradient(135deg, ${primary}15 0%, ${primary}30 100%)` }}
-            >
-                {/* Top color bar */}
-                <div className="fixed top-0 left-0 right-0 h-1.5 z-50 transition-all duration-500" style={{ background: primary }} />
+            {/* Full-page Background Container */}
+            <div className="fixed inset-0 w-screen h-screen flex items-center justify-center p-4 sm:p-6 bg-slate-900/60 backdrop-blur-md z-50 overflow-hidden">
+                <div className="bg-white dark:bg-slate-900 w-full max-w-4xl h-full max-h-[92vh] rounded-[2.5rem] shadow-2xl border border-slate-200 dark:border-slate-800 flex flex-col overflow-hidden">
 
-                <div className="bg-white dark:bg-slate-900 w-full max-w-4xl h-[90vh] rounded-[2.5rem] shadow-2xl flex flex-col overflow-hidden relative">
-
-                    {/* ── 1. HEADER (never scrolls) ── */}
-                    <div
-                        className="flex-shrink-0 p-6 md:p-8 text-white relative overflow-hidden rounded-t-[2.5rem]"
-                        style={{ background: `linear-gradient(135deg, ${primary} 0%, ${primary}cc 100%)` }}
-                    >
-                        <div className="absolute inset-0 opacity-10" style={{
-                            backgroundImage: `radial-gradient(circle at 20% 50%, white 1px, transparent 1px),
-                                radial-gradient(circle at 80% 50%, white 1px, transparent 1px)`,
-                            backgroundSize: '40px 40px',
-                        }} />
-
-                        <div className="relative flex items-center gap-4">
-                            <div className="w-14 h-14 rounded-2xl bg-white/20 flex items-center justify-center flex-shrink-0 overflow-hidden border-2 border-white/40">
-                                {logoPreview
-                                    ? <img src={logoPreview} alt="logo" className="w-full h-full object-contain p-1" />
-                                    : country?.flag
-                                        ? <span className="text-3xl">{country.flag}</span>
-                                        : <School className="w-7 h-7 text-white/60" />}
+                    {/* Header */}
+                    <div className="px-8 py-5 bg-gradient-to-r from-indigo-600 via-indigo-700 to-purple-700 text-white flex justify-between items-center shrink-0">
+                        <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-2xl bg-white/10 flex items-center justify-center">
+                                <School size={20} />
                             </div>
                             <div>
-                                <p className="text-white/60 text-xs font-black uppercase tracking-widest mb-0.5 flex items-center gap-2">
-                                    School Registration
-                                    {country && <span className="text-white/80 normal-case font-bold">· {country.flag} {country.name}</span>}
-                                </p>
-                                <h1 className="text-xl font-black leading-tight truncate max-w-md">{schoolName || 'Your School Name'}</h1>
-                                {motto && <p className="text-white/70 text-sm italic line-clamp-1">" {motto} "</p>}
+                                <h2 className="text-xl font-black">Register School Campus</h2>
+                                <p className="text-xs text-indigo-100 font-medium">Configure identity, academics & system capacity</p>
                             </div>
                         </div>
 
-                        {/* Step pills */}
-                        <div className="relative mt-5 flex items-center gap-2 overflow-x-auto no-scrollbar">
-                            {STEPS.map((s, i) => {
+                        {/* Step Navigation Indicators */}
+                        <div className="hidden md:flex items-center gap-2 bg-white/10 px-4 py-2 rounded-2xl backdrop-blur-sm">
+                            {STEPS.map((s) => {
                                 const Icon = s.icon;
-                                const done = step > s.num;
-                                const active = step === s.num;
+                                const isDone = step > s.num;
+                                const isCurrent = step === s.num;
                                 return (
-                                    <React.Fragment key={s.num}>
-                                        <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-black transition-all flex-shrink-0 ${active ? 'bg-white text-slate-800 shadow-sm' :
-                                            done ? 'bg-white/30 text-white' :
-                                                'bg-white/10 text-white/40'}`}>
-                                            {done ? <CheckCircle2 size={11} /> : <Icon size={11} />}
-                                            {s.label}
+                                    <div key={s.num} className="flex items-center gap-2">
+                                        <div className={`w-7 h-7 rounded-xl flex items-center justify-center text-xs font-black transition-all ${isCurrent ? 'bg-white text-indigo-600 shadow' : isDone ? 'bg-emerald-400 text-slate-900' : 'bg-white/20 text-white'}`}>
+                                            {isDone ? '✓' : s.num}
                                         </div>
-                                        {i < STEPS.length - 1 && (
-                                            <div className={`flex-1 min-w-[15px] h-px ${done ? 'bg-white/60' : 'bg-white/20'}`} />
-                                        )}
-                                    </React.Fragment>
+                                        <span className={`text-xs font-bold ${isCurrent ? 'text-white' : 'text-indigo-200'}`}>{s.label}</span>
+                                        {s.num < STEPS.length && <span className="text-indigo-300 mx-1">/</span>}
+                                    </div>
                                 );
                             })}
                         </div>
                     </div>
 
-                    {/* ── 2. SCROLLABLE INNER BODY ── */}
-                    <div className="flex-1 overflow-y-auto px-6 md:px-8 py-6 focus:outline-none">
-
+                    {/* Scrollable Form Body */}
+                    <div className="p-8 overflow-y-auto flex-1 space-y-6">
                         {error && (
-                            <div className="mb-5 p-3 bg-red-50 dark:bg-red-900/20 text-red-600 text-xs font-bold rounded-xl border border-red-100 dark:border-red-800">
-                                {error}
+                            <div className="p-4 rounded-2xl bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 flex items-center gap-3 text-red-600 dark:text-red-300 text-xs font-bold">
+                                <AlertTriangle size={16} className="shrink-0" />
+                                <span>{error}</span>
                             </div>
                         )}
 
-                        {/* ══ STEP 1: IDENTITY ══ */}
+                        {/* STEP 1: IDENTITY */}
                         {step === 1 && (
                             <div className="space-y-4">
-                                <h2 className="text-base font-black text-slate-800 dark:text-white">School Identity</h2>
+                                <h3 className="text-lg font-black text-slate-800 dark:text-white flex items-center gap-2">
+                                    <School className="text-indigo-500" size={18} /> Basic Information
+                                </h3>
 
                                 <div>
                                     <label className="lx">Country *</label>
-                                    <CountryPicker value={countryCode} onChange={(code) => setCountryCode(code)} />
+                                    <CountryPicker value={countryCode} onChange={setCountryCode} />
                                 </div>
 
-                                <div>
-                                    <div className="flex items-center gap-2 mb-1">
-                                        <label className="lx mb-0">School Name *</label>
-                                        {seed.name && <span className="px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 text-[10px] font-black">✦ Auto-filled</span>}
-                                    </div>
-                                    <input type="text" value={schoolName} required placeholder="e.g. Greenfield Academy" className="if" onChange={(e) => setSchoolName(e.target.value)} />
-                                </div>
-
-                                <div>
-                                    <label className="lx">School Motto</label>
-                                    <input type="text" value={motto} placeholder="e.g. Excellence Through Integrity" className="if" onChange={(e) => setMotto(e.target.value)} />
-                                </div>
-
-                                <div className="grid grid-cols-2 gap-4">
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                                     <div>
-                                        <label className="lx">Established Year</label>
-                                        <input type="number" value={established} min="1800" max={new Date().getFullYear()} placeholder="e.g. 1972" className="if" onChange={(e) => setEstablished(e.target.value)} />
+                                        <label className="lx">School Name *</label>
+                                        <input type="text" value={schoolName} onChange={(e) => setSchoolName(e.target.value)} placeholder="e.g. St. Mark Academy" className="if" />
                                     </div>
-                                    <RegionField country={country} value={region} onChange={setRegion} />
+
+                                    <div>
+                                        <label className="lx">Motto / Slogan</label>
+                                        <input type="text" value={motto} onChange={(e) => setMotto(e.target.value)} placeholder="e.g. Excellence in Action" className="if" />
+                                    </div>
                                 </div>
 
-                                <div>
-                                    <div className="flex items-center gap-2 mb-1">
-                                        {/* <label className="lx mb-0">District / City</label> */}
-                                        {seed.district && <span className="px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 text-[10px] font-black">✦ Auto-filled</span>}
-                                    </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                    <RegionField country={country} value={region} onChange={setRegion} />
                                     <DistrictField country={country} province={region} value={district} onChange={setDistrict} />
                                 </div>
 
                                 <div>
-                                    <label className="lx">Street Address</label>
-                                    <input type="text" value={address} placeholder="123 Main Street" className="if" onChange={(e) => setAddress(e.target.value)} />
+                                    <label className="lx">Physical Street Address</label>
+                                    <input type="text" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="123 Education Way, Campus Row" className="if" />
                                 </div>
 
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                                     <div>
-                                        <label className="lx">Phone</label>
+                                        <label className="lx">Contact Phone</label>
                                         <PhoneInput countryCode={countryCode} value={phone} onChange={setPhone} />
                                     </div>
+
                                     <div>
-                                        <div className="flex items-center gap-2 mb-1">
-                                            <label className="lx mb-0">School Email</label>
-                                            {seed.principalEmail && <span className="px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 text-[10px] font-black">✦ Auto-filled</span>}
-                                        </div>
-                                        <input type="email" value={email} placeholder="info@school.edu" className="if" onChange={(e) => setEmail(e.target.value)} />
+                                        <label className="lx">Official Administrative Email</label>
+                                        <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="admin@school.edu" className="if" />
                                     </div>
                                 </div>
                             </div>
                         )}
 
-                        {/* ══ STEP 2: BRANDING ══ */}
+                        {/* STEP 2: BRANDING */}
                         {step === 2 && (
-                            <div className="space-y-5">
-                                <h2 className="text-base font-black text-slate-800 dark:text-white">School Branding</h2>
+                            <div className="space-y-6">
+                                <h3 className="text-lg font-black text-slate-800 dark:text-white flex items-center gap-2">
+                                    <Palette className="text-indigo-500" size={18} /> Visual Identity & Branding
+                                </h3>
 
                                 <div>
-                                    <label className="lx">School Logo</label>
-                                    <div
-                                        className="border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-2xl p-6 text-center cursor-pointer hover:border-indigo-400 transition-colors"
-                                        onClick={() => logoInputRef.current?.click()}
-                                    >
-                                        {logoPreview ? (
-                                            <div className="relative inline-block">
-                                                <img src={logoPreview} alt="preview" className="h-24 w-24 object-contain mx-auto rounded-xl" />
-                                                <button type="button" onClick={(e) => { e.stopPropagation(); removeLogo(); }}
-                                                    className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-0.5">
-                                                    <X size={12} />
-                                                </button>
-                                            </div>
-                                        ) : (
-                                            <>
-                                                <ImageIcon className="w-10 h-10 mx-auto text-slate-300 mb-2" />
-                                                <p className="text-sm text-slate-500 font-medium">Click to upload school logo</p>
-                                                <p className="text-xs text-slate-400 mt-1">PNG, JPG or SVG • Max 2 MB</p>
-                                            </>
-                                        )}
-                                    </div>
-                                    <input ref={logoInputRef} type="file" accept="image/*" className="hidden" onChange={handleLogoChange} />
-                                </div>
-
-                                <div>
-                                    <label className="lx">Primary School Color</label>
-
-                                    {/* Native browser color picker — primary interaction.
-                      Large clickable swatch opens the full-spectrum OS/browser
-                      picker (canvas+slider on Chrome/Edge, color panel on Safari,
-                      gradient picker on Firefox). No external library needed. */}
-                                    <div className="flex items-center gap-4 p-4 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50">
-                                        <div className="relative flex-shrink-0">
-                                            <input
-                                                type="color"
-                                                value={primary}
-                                                onChange={(e) => setPrimary(e.target.value)}
-                                                aria-label="Pick primary school color"
-                                                className="w-16 h-16 rounded-2xl border-2 border-white dark:border-slate-700 shadow-sm cursor-pointer appearance-none"
-                                                style={{ backgroundColor: primary }}
-                                            />
-                                        </div>
-                                        <div className="flex-1">
-                                            <p className="text-sm font-black text-slate-800 dark:text-white">{primary.toUpperCase()}</p>
-                                            <p className="text-[10px] text-slate-400 mt-0.5">Tap the swatch to open the full color picker</p>
-                                            <input
-                                                type="text"
-                                                value={primary}
-                                                placeholder="#4f46e5"
-                                                className="if !py-1.5 !text-xs mt-2 max-w-[140px]"
-                                                onChange={(e) => {
-                                                    const val = e.target.value;
-                                                    setPrimary(val.startsWith('#') ? val : `#${val}`);
-                                                }}
-                                            />
-                                        </div>
-                                        <div className="px-4 py-2 rounded-xl text-white text-xs font-black flex-shrink-0" style={{ backgroundColor: primary }}>Preview</div>
-                                    </div>
-
-                                    {/* Quick picks — optional shortcuts, native picker remains the primary control */}
-                                    <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mt-4 mb-2">Quick picks</p>
-                                    <div className="flex flex-wrap gap-2">
+                                    <label className="lx">Primary Theme Color</label>
+                                    <div className="flex flex-wrap gap-3 mt-2">
                                         {PRESET_COLORS.map((c) => (
-                                            <button key={c} type="button" onClick={() => setPrimary(c)}
-                                                title={c}
-                                                className="w-8 h-8 rounded-full border-2 transition-all hover:scale-110"
-                                                style={{
-                                                    backgroundColor: c,
-                                                    borderColor: primary === c ? '#0f172a' : 'transparent',
-                                                    transform: primary === c ? 'scale(1.2)' : undefined,
-                                                    boxShadow: primary === c ? `0 0 0 3px ${c}40` : undefined,
-                                                }} />
+                                            <button
+                                                key={c}
+                                                type="button"
+                                                onClick={() => setPrimary(c)}
+                                                className={`w-9 h-9 rounded-2xl transition-all ${primary === c ? 'ring-4 ring-indigo-500 scale-110 shadow-lg' : 'hover:scale-105'}`}
+                                                style={{ backgroundColor: c }}
+                                            />
                                         ))}
                                     </div>
                                 </div>
 
-                                {/* Live preview */}
-                                <div className="rounded-2xl overflow-hidden border border-slate-100 dark:border-slate-800">
-                                    <div className="p-4 text-white text-sm font-bold flex items-center gap-3" style={{ backgroundColor: primary }}>
-                                        {country?.flag && <span className="text-xl">{country.flag}</span>}
-                                        <span>Dashboard header preview</span>
-                                    </div>
-                                    <div className="p-4 bg-slate-50 dark:bg-slate-800 flex items-center gap-3">
-                                        {logoPreview
-                                            ? <img src={logoPreview} alt="" className="w-10 h-10 object-contain rounded-lg" />
-                                            : <div className="w-10 h-10 rounded-lg flex items-center justify-center text-2xl" style={{ backgroundColor: primary + '20' }}>{country?.flag || '🏫'}</div>}
-                                        <div>
-                                            <p className="text-xs font-black text-slate-800 dark:text-white">{schoolName || 'School Name'}</p>
-                                            <p className="text-[10px] text-slate-400 italic">{motto || 'Your motto'}</p>
-                                            {region && <p className="text-[10px] text-slate-400">{region}{country ? `, ${country.name}` : ''}</p>}
+                                <div>
+                                    <label className="lx">School Emblem / Logo</label>
+                                    <div className="mt-2 flex items-center gap-4">
+                                        {logoPreview ? (
+                                            <div className="relative w-24 h-24 rounded-3xl border-2 border-dashed border-indigo-500 p-2 overflow-hidden flex items-center justify-center bg-slate-50 dark:bg-slate-800">
+                                                <img src={logoPreview} alt="Logo preview" className="max-h-full max-w-full object-contain" />
+                                                <button type="button" onClick={removeLogo} className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-full shadow hover:bg-red-600">
+                                                    <X size={12} />
+                                                </button>
+                                            </div>
+                                        ) : (
+                                            <button
+                                                type="button"
+                                                onClick={() => logoInputRef.current?.click()}
+                                                className="w-24 h-24 rounded-3xl border-2 border-dashed border-slate-300 dark:border-slate-700 flex flex-col items-center justify-center text-slate-400 hover:border-indigo-500 hover:text-indigo-500 transition-all bg-slate-50 dark:bg-slate-800/50"
+                                            >
+                                                <ImageIcon size={24} />
+                                                <span className="text-[10px] font-bold mt-1">Upload</span>
+                                            </button>
+                                        )}
+                                        <input ref={logoInputRef} type="file" accept="image/*" onChange={handleLogoChange} className="hidden" />
+                                        <div className="text-xs text-slate-500 space-y-1">
+                                            <p className="font-bold text-slate-700 dark:text-slate-300">PNG, JPG or SVG formats accepted</p>
+                                            <p>Maximum size: 2MB. Transparent PNG recommended.</p>
                                         </div>
                                     </div>
                                 </div>
                             </div>
                         )}
 
-                        {/* ══ STEP 3: ACADEMICS (fully AI-resolved cascade) ══ */}
+                        {/* STEP 3: ACADEMICS */}
                         {step === 3 && (
                             <div className="space-y-6">
-                                <h2 className="text-base font-black text-slate-800 dark:text-white">Academics</h2>
-
-                                {seed.curricula?.length > 0 && (
-                                    <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-100 text-indigo-700 text-[11px] font-black">
-                                        ✦ Curriculum data mapped
-                                    </div>
-                                )}
+                                <h3 className="text-lg font-black text-slate-800 dark:text-white flex items-center gap-2">
+                                    <BookOpen className="text-indigo-500" size={18} /> Academic Framework & Structure
+                                </h3>
 
                                 <CurriculaPicker
                                     country={country}
@@ -976,183 +854,176 @@ export default function SchoolRegistration({ principalProfile, onComplete }) {
                                     addCustomCurriculum={addCustomCurriculum}
                                 />
 
-                                {/* Primary curriculum selector — only relevant once 2+ chosen,
-                    drives the levels/phases/subjects cascade below */}
-                                {curricula.length > 1 && (
-                                    <div>
-                                        <label className="lx flex items-center gap-1.5">
-                                            <GraduationCap size={11} /> Primary curriculum (used to load levels & subjects)
-                                        </label>
-                                        <select value={primaryCurriculum} className="if" onChange={(e) => setPrimaryCurriculum(e.target.value)}>
-                                            {curricula.map((c) => <option key={c} value={c}>{c}</option>)}
-                                        </select>
-                                    </div>
+                                {curricula.length > 0 && (
+                                    <>
+                                        <PhasePicker
+                                            country={country}
+                                            curriculum={primaryCurriculum}
+                                            selected={phases}
+                                            onToggle={togglePhase}
+                                            primary={primary}
+                                        />
+
+                                        <LevelsPicker
+                                            country={country}
+                                            curriculum={primaryCurriculum}
+                                            selected={levels}
+                                            onToggle={toggleLevel}
+                                            primary={primary}
+                                        />
+
+                                        <SubjectsPicker
+                                            country={country}
+                                            curriculum={primaryCurriculum}
+                                            phase={primaryPhase}
+                                            selected={subjects}
+                                            onToggle={toggleSubject}
+                                            primary={primary}
+                                        />
+                                    </>
                                 )}
-
-                                <div className="h-px bg-slate-100 dark:bg-slate-800" />
-
-                                <PhasePicker
-                                    country={country}
-                                    curriculum={primaryCurriculum}
-                                    selected={phases}
-                                    onToggle={togglePhase}
-                                    primary={primary}
-                                />
-
-                                {phases.length > 1 && (
-                                    <div>
-                                        <label className="lx">Primary phase (used to load subjects)</label>
-                                        <select value={primaryPhase} className="if" onChange={(e) => setPrimaryPhase(e.target.value)}>
-                                            <option value="">Select phase...</option>
-                                            {phases.map((p) => <option key={p} value={p}>{p}</option>)}
-                                        </select>
-                                    </div>
-                                )}
-
-                                <LevelsPicker
-                                    country={country}
-                                    curriculum={primaryCurriculum}
-                                    selected={levels}
-                                    onToggle={toggleLevel}
-                                    primary={primary}
-                                />
-
-                                <SubjectsPicker
-                                    country={country}
-                                    curriculum={primaryCurriculum}
-                                    phase={primaryPhase}
-                                    selected={subjects}
-                                    onToggle={toggleSubject}
-                                    primary={primary}
-                                />
                             </div>
                         )}
 
-                        {/* ══ STEP 4: PLAN ══ */}
+                        {/* STEP 4: PLAN & SEATS (Dynamic Custom Controls) */}
                         {step === 4 && (
-                            <div className="space-y-4">
-                                <div>
-                                    <h2 className="text-base font-black text-slate-800 dark:text-white">Choose Your Plan</h2>
-                                    <p className="text-xs text-slate-500 mt-1">Start free and upgrade any time. Paid plans unlock immediately after payment.</p>
+                            <div className="space-y-6">
+                                <div className="flex justify-between items-start">
+                                    <div>
+                                        <h3 className="text-lg font-black text-slate-800 dark:text-white flex items-center gap-2">
+                                            <Layers className="text-indigo-500" size={18} /> Capacity & Subscription Setup
+                                        </h3>
+                                        <p className="text-xs text-slate-500 mt-0.5">Define your required student and educator seat quotas.</p>
+                                    </div>
+                                    <span className="text-xs font-black px-3 py-1 rounded-full bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400">
+                                        {isBaseline ? 'Free Baseline' : 'Custom Active Scale'}
+                                    </span>
                                 </div>
-                                <TierSelection selected={selectedTier} current={null} onSelect={handleTierSelect} compact={true} />
-                                <div className="p-4 bg-slate-50 dark:bg-slate-800 rounded-2xl text-xs text-slate-500">
-                                    💳 Selecting a paid plan opens a secure payment step. You can always start free and upgrade later from your principal dashboard.
+
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                    {/* Student Capacity Input */}
+                                    <div className="p-5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                                        <div className="flex items-center gap-2 text-indigo-600 dark:text-indigo-400 font-bold text-xs">
+                                            <GraduationCap size={16} /> Student Seats Quota
+                                        </div>
+                                        <div className="mt-3 flex items-center justify-between">
+                                            <span className="text-xs text-slate-500">Includes {FREE_STUDENT_BASE} free seats</span>
+                                            <input
+                                                type="number"
+                                                min={FREE_STUDENT_BASE}
+                                                value={studentCount}
+                                                onChange={(e) => setStudentCount(Math.max(1, parseInt(e.target.value) || 0))}
+                                                className="if !w-28 text-center font-black text-lg"
+                                            />
+                                        </div>
+                                    </div>
+
+                                    {/* Teacher Capacity Input */}
+                                    <div className="p-5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                                        <div className="flex items-center gap-2 text-indigo-600 dark:text-indigo-400 font-bold text-xs">
+                                            <Users size={16} /> Teacher Seats Quota
+                                        </div>
+                                        <div className="mt-3 flex items-center justify-between">
+                                            <span className="text-xs text-slate-500">Includes {FREE_TEACHER_BASE} free seats</span>
+                                            <input
+                                                type="number"
+                                                min={FREE_TEACHER_BASE}
+                                                value={teacherCount}
+                                                onChange={(e) => setTeacherCount(Math.max(1, parseInt(e.target.value) || 0))}
+                                                className="if !w-28 text-center font-black text-lg"
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Billing Overview Action Card */}
+                                <div className="p-6 rounded-3xl bg-indigo-50/50 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/40 flex flex-col sm:flex-row justify-between items-center gap-4">
+                                    <div>
+                                        <h4 className="text-sm font-black text-slate-800 dark:text-white">Selected Capacity Overview</h4>
+                                        <p className="text-xs text-slate-500 mt-1">
+                                            {isBaseline
+                                                ? 'Standard baseline tier selected — 100% free account.'
+                                                : `Custom setup configured for ${studentCount} students and ${teacherCount} teachers.`}
+                                        </p>
+                                    </div>
+
+                                    {!isBaseline && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowPayment(true)}
+                                            className="w-full sm:w-auto px-5 py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2 transition-all whitespace-nowrap"
+                                        >
+                                            <CreditCard size={15} /> Calculate & Checkout
+                                        </button>
+                                    )}
                                 </div>
                             </div>
                         )}
-
                     </div>
 
-                    {/* ── 3. LOCKED BOTTOM NAV CLUSTER ── */}
-                    <div className="flex-shrink-0 px-6 md:px-8 py-4 border-t border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 rounded-b-[2.5rem] flex items-center justify-between gap-3">
+                    {/* Sticky Footer Action Bar */}
+                    <div className="px-8 py-4 bg-slate-50 dark:bg-slate-800/80 border-t border-slate-200 dark:border-slate-800 flex justify-between items-center shrink-0">
+                        <button
+                            type="button"
+                            onClick={handleSaveAndCompleteLater}
+                            disabled={isSavingDraft || isSubmitting}
+                            className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 text-xs font-bold transition-all disabled:opacity-50"
+                        >
+                            {isSavingDraft ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+                            <span>Save & Exit</span>
+                        </button>
 
-                        <div className="flex items-center gap-2 flex-1">
-                            {step > 1 ? (
+                        <div className="flex gap-3">
+                            {step > 1 && (
                                 <button
                                     type="button"
                                     onClick={goBack}
-                                    className="px-5 py-3.5 border border-slate-200 dark:border-slate-700 rounded-2xl font-black text-xs md:text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-all"
+                                    disabled={isSubmitting}
+                                    className="px-5 py-2.5 rounded-xl bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-white text-xs font-black hover:opacity-80 transition-all"
                                 >
-                                    ← Back
-                                </button>
-                            ) : (
-                                <div className="text-xs font-bold text-slate-400 italic hidden md:block">
-                                    Step 1 of 4
-                                </div>
-                            )}
-
-                            {schoolName.trim().length > 0 && (
-                                <button
-                                    type="button"
-                                    disabled={isSavingDraft || isSubmitting}
-                                    onClick={handleSaveAndCompleteLater}
-                                    className="px-4 py-3.5 text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white text-xs font-black flex items-center gap-2 rounded-xl transition-colors disabled:opacity-40"
-                                >
-                                    {isSavingDraft ? (
-                                        <Loader2 size={14} className="animate-spin" />
-                                    ) : (
-                                        <Save size={14} />
-                                    )}
-                                    <span className="hidden sm:inline">Save Draft</span>
+                                    Back
                                 </button>
                             )}
-                        </div>
 
-                        <div className="flex-1 flex justify-end">
                             {step < 4 ? (
                                 <button
                                     type="button"
-                                    disabled={!canProceed()}
                                     onClick={goNext}
-                                    className="w-full sm:max-w-[200px] py-3.5 rounded-2xl font-black text-xs md:text-sm text-white flex items-center justify-center gap-2 disabled:opacity-40 transition-all active:scale-95 shadow-md"
+                                    disabled={!canProceed()}
+                                    className="flex items-center gap-2 px-6 py-2.5 rounded-xl text-white text-xs font-black shadow-lg transition-all disabled:opacity-50"
                                     style={{ backgroundColor: primary }}
                                 >
-                                    Continue <ArrowRight size={16} />
+                                    <span>Next Step</span>
+                                    <ArrowRight size={14} />
                                 </button>
                             ) : (
                                 <button
                                     type="button"
-                                    disabled={isSubmitting || isSavingDraft || !curricula.length}
                                     onClick={handleSubmit}
-                                    className="w-full sm:max-w-[240px] py-3.5 rounded-2xl font-black text-xs md:text-sm text-white flex items-center justify-center gap-2 disabled:opacity-40 transition-all active:scale-95 shadow-md"
-                                    style={{ backgroundColor: primary }}
+                                    disabled={isSubmitting}
+                                    className="flex items-center gap-2 px-8 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black shadow-lg shadow-emerald-600/20 transition-all disabled:opacity-50"
                                 >
-                                    {isSubmitting ? (
-                                        <><Loader2 size={16} className="animate-spin" /> Registering...</>
-                                    ) : (
-                                        <><CheckCircle2 size={16} /> Complete Registration</>
-                                    )}
+                                    {isSubmitting ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                                    <span>Complete Registration</span>
                                 </button>
                             )}
                         </div>
-
                     </div>
-
                 </div>
             </div>
 
-            {/* Payment modal hook */}
-            {showPayment && pendingUpgradeTier && (
+            {/* Dynamic Custom Payment Manager Modal */}
+            {showPayment && (
                 <PaymentManager
-                    schoolId={auth.currentUser?.uid || principalProfile?.uid || seed.principalUid}
+                    schoolId={auth.currentUser?.uid || seed.principalUid}
                     schoolName={schoolName}
-                    currentTier="free"
-                    onClose={() => { setShowPayment(false); setPendingUpgradeTier(null); }}
-                    onTierChange={handlePaymentSuccess}
+                    schoolData={{
+                        studentCount: Number(studentCount),
+                        teacherCount: Number(teacherCount),
+                    }}
+                    onClose={() => setShowPayment(false)}
                 />
             )}
-
-            <style>{`
-        .lx {
-          display: block;
-          font-size: 10px;
-          font-weight: 900;
-          color: #94a3b8;
-          text-transform: uppercase;
-          letter-spacing: .1em;
-          margin-bottom: 6px;
-        }
-        .if {
-          width: 100%;
-          padding: 12px 16px;
-          border-radius: 1rem;
-          border: 1px solid #e2e8f0;
-          background: white;
-          font-size: 14px;
-          outline: none;
-          color: #0f172a;
-          transition: border-color .2s;
-        }
-        .dark .if {
-          background: #1e293b;
-          border-color: #334155;
-          color: white;
-        }
-        .if:focus { border-color: ${primary}; }
-        .no-scrollbar::-webkit-scrollbar { display: none; }
-        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-      `}</style>
         </>
     );
 }

@@ -14,6 +14,7 @@ import { getAuth, onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { createPortal } from 'react-dom';
 import { useUser } from '../contexts/UserContext';
+import { useActiveTier } from '../utils/firestoreHelpers';
 
 import {
     Users, BookOpen, FileText, TrendingUp, Award, AlertTriangle,
@@ -24,13 +25,9 @@ import {
 } from 'lucide-react';
 import PaymentManager from './PaymentManager';
 import SubscriptionManager from './SubscriptionManager';
-import {
-    subscribeToSchoolTeachers, subscribeToSchoolStudents,
-    subscribeToSchoolExams, subscribeToSchoolAttempts, subscribeToAuditLog,
-    countByGrade, averageScore, groupBySubject, passRate, useActiveTier
-} from '../utils/firestoreHelpers';
+import { subscribeToSchoolTeachers, subscribeToSchoolStudents, subscribeToSchoolExams, subscribeToSchoolAttempts, subscribeToAuditLog, countByGrade, averageScore, groupBySubject, passRate } from '../utils/firestoreHelpers';
+import { useCurrentSubscription } from '../utils/tierConfig';
 import { useSchool } from '../utils/schoolContext';
-import { TIERS, getTierConfig, isFeatureAllowed, isAtLimit, getUsagePercent } from '../utils/tierConfig';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { onSnapshot, collection, getDocs, query, where } from 'firebase/firestore';
@@ -71,30 +68,15 @@ const dynamicGradeOrder = Object.keys(activeGradeCounts).sort((a, b) => {
 // Alias the old variable name to the new dynamic order so legacy components don't crash
 const GRADE_ORDER = dynamicGradeOrder;
 
-// ─── TIER VISUAL META ─────────────────────────────────────────────────────────
-const TIER_VISUAL = TIERS.reduce((acc, tier) => {
-    acc[tier.id] = {
-        label: tier.label,
-        icon: tier.icon,
-        gradient: tier.gradient,
-        badge: tier.gradientBg,
-        ring: tier.gradientBg,
-    };
-    return acc;
-}, {});
 
 // ─── LIMIT STATUS HOOK ────────────────────────────────────────────────────────
 // Single source of truth for all dynamic limit checks (base + add-on capacity)
-
-export function useLimitStatus(tier, usage = {}, dynamicLimits = {}) {
+export function useLimitStatus(seats = {}, examLimit = null, usage = {}) {
     return useMemo(() => {
-        const tierConfig = getTierConfig(tier);
-
-        // Compute actual total limit (dynamic allocated capacity || base tier allowance)
         const computedLimits = {
-            students: dynamicLimits?.studentLimit ?? dynamicLimits?.studentCount ?? tierConfig?.includedStudents ?? 50,
-            teachers: dynamicLimits?.teacherLimit ?? dynamicLimits?.teacherCount ?? tierConfig?.includedTeachers ?? 5,
-            exams: tierConfig?.limits?.exams ?? null, // null = unlimited if applicable
+            students: seats?.students ?? 50,
+            teachers: seats?.teachers ?? 5,
+            exams: examLimit,
         };
 
         const check = (key) => {
@@ -116,12 +98,7 @@ export function useLimitStatus(tier, usage = {}, dynamicLimits = {}) {
         const anyWarning = students.warning || exams.warning || teachers.warning;
 
         return { students, exams, teachers, anyBlocked, anyWarning, limits: computedLimits };
-    }, [
-        tier,
-        usage?.students, usage?.exams, usage?.teachers,
-        dynamicLimits?.studentLimit, dynamicLimits?.studentCount,
-        dynamicLimits?.teacherLimit, dynamicLimits?.teacherCount
-    ]);
+    }, [seats?.students, seats?.teachers, examLimit, usage?.students, usage?.exams, usage?.teachers]);
 }
 
 // ─── LIMIT ALERT BANNER ───────────────────────────────────────────────────────
@@ -265,13 +242,14 @@ export function UsageMeter({ label, used, limit, color = '#4f46e5' }) {
     );
 }
 
-export function TierBadge({ tier, collapsed }) {
-    const config = getTierConfig(tier);
-    const Icon = config.icon;
+export function TierBadge({ isFreeBaseline, collapsed }) {
+    const Icon = isFreeBaseline ? Sparkles : Crown;
+    const label = isFreeBaseline ? 'Free Baseline' : 'Custom Plan';
+    const gradient = isFreeBaseline ? 'from-slate-400 to-slate-500' : 'from-indigo-500 to-indigo-600';
 
     if (collapsed) {
         return (
-            <div className={`w-8 h-8 rounded-xl flex items-center justify-center bg-gradient-to-br ${config.gradient} mx-auto`}>
+            <div className={`w-8 h-8 rounded-xl flex items-center justify-center bg-gradient-to-br ${gradient} mx-auto`}>
                 <Icon size={14} className="text-white" />
             </div>
         );
@@ -279,26 +257,20 @@ export function TierBadge({ tier, collapsed }) {
 
     return (
         <div className="flex items-center gap-2 px-2 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-700">
-            <div className={`w-5 h-5 rounded-lg flex items-center justify-center bg-gradient-to-br ${config.gradient} flex-shrink-0`}>
+            <div className={`w-5 h-5 rounded-lg flex items-center justify-center bg-gradient-to-br ${gradient} flex-shrink-0`}>
                 <Icon size={10} className="text-white" />
             </div>
             <span className="text-[10px] font-black uppercase tracking-wider text-slate-700 dark:text-slate-200">
-                {config.label} Plan
+                {label}
             </span>
         </div>
     );
 }
 
-export function UpgradeBanner({ tier, onUpgrade, onDismiss }) {
-    if (tier === 'platinum') return null;
+export function UpgradeBanner({ isFreeBaseline, onUpgrade, onDismiss }) {
+    if (!isFreeBaseline) return null;
+    const message = "You're on the Free Baseline plan (up to 10 students, 2 teachers). Add seats anytime as your school grows.";
 
-    const messages = {
-        free: "You're on the Free tier. Upgrade base plan or purchase add-on seats for extra student capacity.",
-        silver: 'Upgrade to Gold for unlimited exams, advanced reporting & reduced per-seat rates.',
-        gold: 'Upgrade to Platinum for custom SLA support, priority processing & maximum seat savings.',
-    };
-
-    if (!messages[tier]) return null;
     return (
         <div className="relative bg-gradient-to-r from-violet-600 to-indigo-600 rounded-2xl p-4 flex items-center gap-3 overflow-hidden print:hidden">
             <div className="absolute inset-0 opacity-10">
@@ -309,12 +281,9 @@ export function UpgradeBanner({ tier, onUpgrade, onDismiss }) {
                 <Zap size={16} className="text-white" />
             </div>
             <div className="flex-1 min-w-0">
-                <p className="text-[11px] font-black text-white leading-snug">{messages[tier]}</p>
+                <p className="text-[11px] font-black text-white leading-snug">{message}</p>
             </div>
-            <button
-                onClick={onUpgrade}
-                className="flex-shrink-0 flex items-center gap-1 bg-white text-indigo-700 text-[10px] font-black px-3 py-2 rounded-xl hover:bg-indigo-50 transition-colors"
-            >
+            <button onClick={onUpgrade} className="flex-shrink-0 flex items-center gap-1 bg-white text-indigo-700 text-[10px] font-black px-3 py-2 rounded-xl hover:bg-indigo-50 transition-colors">
                 Manage Seats <ArrowUpRight size={11} />
             </button>
             {onDismiss && (
@@ -326,8 +295,10 @@ export function UpgradeBanner({ tier, onUpgrade, onDismiss }) {
     );
 }
 
+
 export function LockedFeature({ featureName, requiredTier, onUpgrade }) {
     const vis = TIER_VISUAL[requiredTier] || TIER_VISUAL.free;
+
     return (
         <div className="relative bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 p-10 text-center overflow-hidden">
             <div className="absolute inset-0 bg-slate-50/70 dark:bg-slate-900/70 backdrop-blur-[2px] rounded-2xl" />
@@ -434,6 +405,7 @@ export default function PrincipalDashboard({ principal }) {
         return id;
     }, [principal?.schoolId, selectedSchoolDoc?.id, school?.id]);
 
+    const { tier: activeTier, loading: isTierLoading } = useActiveTier(schoolId);
 
     // ── Derived ───────────────────────────────────────────────────────────────
 
@@ -502,9 +474,9 @@ export default function PrincipalDashboard({ principal }) {
     }), [students.length, exams.length, teachers.length]);
 
     // ─── 5. TIER — needs schoolId, then usage ─────────────────────────────
-    const { tier: activeTier, loading: tierLoading } = useActiveTier(schoolId);
-    const tierConfig = getTierConfig(activeTier);
-    const limits = useLimitStatus(activeTier, usage);
+    const { seats, examLimit, isFreeBaseline, loading: subLoading } = useCurrentSubscription(schoolId);
+    const limits = useLimitStatus(seats, examLimit, usage);
+
 
     useEffect(() => {
         if (!schoolId) return;
@@ -703,13 +675,7 @@ export default function PrincipalDashboard({ principal }) {
         { id: 'teachers', label: 'Teachers', icon: GraduationCap },
         { id: 'students', label: 'Students', icon: Users },
         { id: 'exams', label: 'Exams', icon: FileText },
-        {
-            id: 'audit',
-            label: 'Audit Log',
-            icon: AlertTriangle,
-            locked: !isFeatureAllowed(activeTier, 'auditLog'),
-            requiredTier: 'starter',
-        },
+        { id: 'audit', label: 'Audit Log', icon: AlertTriangle },
         { id: 'subscriptions', label: 'Subscriptions', icon: CreditCard },
         { id: 'settings', label: 'Settings', icon: Settings },
     ];
@@ -894,19 +860,29 @@ export default function PrincipalDashboard({ principal }) {
                             {selectedSchoolDoc?.schoolName || selectedSchoolDoc?.name || 'My School'} · {new Date().toLocaleDateString('en-ZA', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}                        </p>
                     </div>
 
-                    {/* Tier chip — turns red if any resource is blocked */}
+                    {/* Plan chip — turns red if any resource is blocked, amber if near limit, else shows plan state */}
                     <div className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[9px] font-black transition-colors ${limits.anyBlocked
                         ? 'bg-red-50 text-red-700 dark:bg-red-900/20 dark:text-red-300'
                         : limits.anyWarning
                             ? 'bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300'
-                            : TIER_VISUAL[activeTier]?.badge
+                            : isFreeBaseline
+                                ? 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
+                                : 'bg-indigo-50 text-indigo-700 dark:bg-indigo-900/20 dark:text-indigo-300'
                         }`}>
                         {limits.anyBlocked
                             ? <Lock size={10} />
                             : limits.anyWarning
                                 ? <AlertTriangle size={10} />
-                                : React.createElement(TIER_VISUAL[activeTier]?.icon || Star, { size: 10 })}
-                        {limits.anyBlocked ? 'Limit reached' : limits.anyWarning ? 'Near limit' : TIER_VISUAL[activeTier]?.label}
+                                : isFreeBaseline
+                                    ? <Sparkles size={10} />
+                                    : <Crown size={10} />}
+                        {limits.anyBlocked
+                            ? 'Limit reached'
+                            : limits.anyWarning
+                                ? 'Near limit'
+                                : isFreeBaseline
+                                    ? 'Free Baseline'
+                                    : 'Custom Plan'}
                     </div>
 
                     {/* Export and share button for principal */}
@@ -925,9 +901,9 @@ export default function PrincipalDashboard({ principal }) {
                     {/* ── OVERVIEW TAB ── */}
                     {activeTab === 'overview' && (
                         <>
-                            {!bannerDismissed && activeTier !== 'enterprise' && (
+                            {!bannerDismissed && (
                                 <UpgradeBanner
-                                    tier={activeTier}
+                                    isFreeBaseline={isFreeBaseline}
                                     onUpgrade={handleUpgrade}
                                     onDismiss={() => setBannerDismissed(true)}
                                 />
@@ -1526,47 +1502,44 @@ export default function PrincipalDashboard({ principal }) {
 
                     {/* ── AUDIT LOG TAB ── */}
                     {activeTab === 'audit' && (
-                        isFeatureAllowed(activeTier, 'auditLog')
-                            ? (
-                                <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 overflow-hidden">
-                                    <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between">
-                                        <h2 className="text-sm font-black text-slate-700 dark:text-white">Audit Log</h2>
-                                        <span className="text-xs text-slate-400">{auditLog.length} entries</span>
+
+                        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 overflow-hidden">
+                            <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between">
+                                <h2 className="text-sm font-black text-slate-700 dark:text-white">Audit Log</h2>
+                                <span className="text-xs text-slate-400">{auditLog.length} entries</span>
+                            </div>
+                            {auditLog.length === 0
+                                ? <div className="p-10 text-center"><Clock className="w-8 h-8 text-slate-300 mx-auto mb-2" /><p className="text-xs text-slate-400">No audit events yet.</p></div>
+                                : (
+                                    <div className="overflow-x-auto">
+                                        <table className="w-full text-xs min-w-[560px]">
+                                            <thead>
+                                                <tr className="border-b border-slate-100 dark:border-slate-700">
+                                                    {['Type', 'Description', 'Actor', 'Student', 'Exam', 'Timestamp'].map(h => (
+                                                        <th key={h} className="text-left px-4 py-3 font-black text-slate-400 uppercase text-[9px]">{h}</th>
+                                                    ))}
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {auditLog.map(ev => (
+                                                    <tr key={ev.id} className="border-b border-slate-50 dark:border-slate-700/50">
+                                                        <td className="px-4 py-3">
+                                                            <span className={`text-[9px] font-black px-2 py-0.5 rounded-lg ${ev.type === 'ai_mark' ? 'bg-indigo-50 text-indigo-600' : ev.type === 'remark' ? 'bg-amber-50 text-amber-600' : ev.type === 'modification' ? 'bg-rose-50 text-rose-600' : 'bg-slate-100 text-slate-500'}`}>
+                                                                {ev.type || 'event'}
+                                                            </span>
+                                                        </td>
+                                                        <td className="px-4 py-3 font-medium text-slate-700 dark:text-slate-200 max-w-[160px] truncate">{ev.description || '—'}</td>
+                                                        <td className="px-4 py-3 text-slate-500">{ev.actorName || 'System'}</td>
+                                                        <td className="px-4 py-3 text-slate-500">{ev.studentName || '—'}</td>
+                                                        <td className="px-4 py-3 text-slate-500">{ev.examTitle || '—'}</td>
+                                                        <td className="px-4 py-3 text-slate-400">{ev.timestamp?.toDate?.().toLocaleString('en-ZA') || '—'}</td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
                                     </div>
-                                    {auditLog.length === 0
-                                        ? <div className="p-10 text-center"><Clock className="w-8 h-8 text-slate-300 mx-auto mb-2" /><p className="text-xs text-slate-400">No audit events yet.</p></div>
-                                        : (
-                                            <div className="overflow-x-auto">
-                                                <table className="w-full text-xs min-w-[560px]">
-                                                    <thead>
-                                                        <tr className="border-b border-slate-100 dark:border-slate-700">
-                                                            {['Type', 'Description', 'Actor', 'Student', 'Exam', 'Timestamp'].map(h => (
-                                                                <th key={h} className="text-left px-4 py-3 font-black text-slate-400 uppercase text-[9px]">{h}</th>
-                                                            ))}
-                                                        </tr>
-                                                    </thead>
-                                                    <tbody>
-                                                        {auditLog.map(ev => (
-                                                            <tr key={ev.id} className="border-b border-slate-50 dark:border-slate-700/50">
-                                                                <td className="px-4 py-3">
-                                                                    <span className={`text-[9px] font-black px-2 py-0.5 rounded-lg ${ev.type === 'ai_mark' ? 'bg-indigo-50 text-indigo-600' : ev.type === 'remark' ? 'bg-amber-50 text-amber-600' : ev.type === 'modification' ? 'bg-rose-50 text-rose-600' : 'bg-slate-100 text-slate-500'}`}>
-                                                                        {ev.type || 'event'}
-                                                                    </span>
-                                                                </td>
-                                                                <td className="px-4 py-3 font-medium text-slate-700 dark:text-slate-200 max-w-[160px] truncate">{ev.description || '—'}</td>
-                                                                <td className="px-4 py-3 text-slate-500">{ev.actorName || 'System'}</td>
-                                                                <td className="px-4 py-3 text-slate-500">{ev.studentName || '—'}</td>
-                                                                <td className="px-4 py-3 text-slate-500">{ev.examTitle || '—'}</td>
-                                                                <td className="px-4 py-3 text-slate-400">{ev.timestamp?.toDate?.().toLocaleString('en-ZA') || '—'}</td>
-                                                            </tr>
-                                                        ))}
-                                                    </tbody>
-                                                </table>
-                                            </div>
-                                        )}
-                                </div>
-                            )
-                            : <LockedFeature featureName="Audit Log" requiredTier="starter" onUpgrade={handleUpgrade} />
+                                )}
+                        </div>
                     )}
 
                     {/* ── SUBSCRIPTIONS TAB ── */}

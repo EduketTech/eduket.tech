@@ -4,7 +4,7 @@ import {
     ArrowUpRight, ArrowDownRight, CheckCircle2, XCircle,
     CreditCard, Receipt, FileText, Download,
     AlertTriangle, RefreshCw, CalendarClock, TrendingUp,
-    Shield, Zap, Users, GraduationCap, Plus, Minus
+    Shield, Zap, Users, GraduationCap, Plus, Minus, UploadCloud, ShieldCheck, Sparkles, ArrowRight
 } from 'lucide-react';
 import {
     collection, query, where, orderBy, limit,
@@ -12,63 +12,54 @@ import {
 } from 'firebase/firestore';
 import { db } from '../utils/firebase';
 import {
-    TIERS, TIER_ORDER, getTierConfig, getTierPrice, isUpgrade as isTierUpgrade,
-    useCurrentTier
+    FREE_STUDENT_BASE, FREE_TEACHER_BASE
 } from '../utils/tierConfig';
 import PaymentManager from './PaymentManager';
 
-// ─── ADD-ON & SUBSCRIPTION CALCULATION ───────────────────────────────────────
-export function calculateSubscriptionTotal(tierConfig, studentCount, teacherCount, billingCycle = 'monthly') {
-    if (!tierConfig) return 0;
 
-    const basePrice = getTierPrice(tierConfig, billingCycle);
-    if (tierConfig.id === 'free' && basePrice === 0 && studentCount <= (tierConfig.includedStudents ?? 50) && teacherCount <= (tierConfig.includedTeachers ?? 5)) {
-        return 0;
+
+/**
+ * Triggers a browser print preview formatted as a downloadable PDF invoice/statement
+ */
+export function generatePDFDocument({ title, filename, contentHtml }) {
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+        alert('Please allow popups to download your invoice/statement.');
+        return;
     }
 
-    const studentRate = tierConfig.perStudentPrice ?? 15; // R15/student
-    const teacherRate = tierConfig.perTeacherPrice ?? 50;  // R50/teacher
-
-    const baseStudents = tierConfig.includedStudents ?? 50;
-    const baseTeachers = tierConfig.includedTeachers ?? 5;
-
-    const extraStudents = Math.max(0, studentCount - baseStudents);
-    const extraTeachers = Math.max(0, teacherCount - baseTeachers);
-
-    const studentAddonTotal = extraStudents * studentRate;
-    const teacherAddonTotal = extraTeachers * teacherRate;
-
-    const monthlyTotal = basePrice + studentAddonTotal + teacherAddonTotal;
-    return billingCycle === 'annual' ? Math.round(monthlyTotal * 0.8) : monthlyTotal;
-}
-
-// ─── WRITE BILLING RECORD ─────────────────────────────────────────────────────
-export async function recordBillingPayment(schoolId, tierId, paymentMethod = 'Card •••• 4242') {
-    const tier = getTierConfig(tierId);
-    const amount = tier.monthlyPrice ?? 0;
-    if (amount === 0) return;
-
-    const now = new Date();
-    const next = new Date(now);
-    next.setMonth(next.getMonth() + 1);
-
-    await addDoc(collection(db, 'billing'), {
-        schoolId,
-        tier: tierId,
-        amount,
-        date: serverTimestamp(),
-        description: `${tier.label} Plan — Monthly`,
-        status: 'paid',
-        method: paymentMethod,
-        invoiceId: `INV-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${schoolId.slice(0, 6).toUpperCase()}`,
-    });
-
-    await updateDoc(doc(db, 'schools', schoolId), {
-        tier: tierId,
-        subscribedAt: serverTimestamp(),
-        nextBillingDate: next.toISOString(),
-        updatedAt: serverTimestamp(),
-    });
+    printWindow.document.write(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>${title}</title>
+            <style>
+                body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 30px; color: #1e293b; }
+                .header { display: flex; justify-content: space-between; border-bottom: 2px solid #e2e8f0; padding-bottom: 20px; margin-bottom: 20px; }
+                .logo { font-size: 20px; font-weight: 900; color: #4f46e5; }
+                .meta { text-align: right; font-size: 12px; color: #64748b; }
+                table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+                th { background: #f8fafc; text-align: left; padding: 10px; font-size: 11px; text-transform: uppercase; border-bottom: 2px solid #e2e8f0; }
+                td { padding: 12px 10px; border-bottom: 1px solid #f1f5f9; font-size: 12px; }
+                .total-row { font-weight: bold; font-size: 14px; background: #f8fafc; }
+                .footer { margin-top: 40px; font-size: 10px; color: #94a3b8; text-align: center; border-top: 1px solid #e2e8f0; padding-top: 15px; }
+                @media print {
+                    body { padding: 0; }
+                }
+            </style>
+        </head>
+        <body>
+            ${contentHtml}
+            <script>
+                window.onload = function() {
+                    window.print();
+                    setTimeout(() => window.close(), 500);
+                };
+            </script>
+        </body>
+        </html>
+    `);
+    printWindow.document.close();
 }
 
 // ─── REAL BILLING HOOK ────────────────────────────────────────────────────────
@@ -103,15 +94,142 @@ function useBillingHistory(schoolId) {
     return { records, loading };
 }
 
+
+// BILLING HISTORY
+function BillingHistory({ schoolId, schoolName = 'School', invoices }) {
+    const { records: fetchedRecords, loading } = useBillingHistory ? useBillingHistory(schoolId) : { records: [], loading: false };
+    const historyList = invoices ?? fetchedRecords ?? [];
+
+    const handleDownloadInvoice = (item) => {
+        const invoiceId = (item?.id || item?.invoiceId || 'INV-001').toString().slice(0, 8).toUpperCase();
+        const dateStr = item?.date instanceof Date ? item.date.toLocaleDateString('en-ZA') : 'Recent';
+        const amount = (item?.amount ?? item?.totalAmount ?? 0).toLocaleString();
+
+        const contentHtml = `
+            <div class="header">
+                <div>
+                    <div class="logo">ACADEMIC PLATFORM</div>
+                    <p style="font-size: 12px; color: #64748b; margin-top: 4px;">Tax Invoice / Payment Receipt</p>
+                </div>
+                <div class="meta">
+                    <p><strong>Invoice #:</strong> ${invoiceId}</p>
+                    <p><strong>Date:</strong> ${dateStr}</p>
+                    <p><strong>Status:</strong> ${item?.status?.toUpperCase() || 'PAID'}</p>
+                </div>
+            </div>
+            <div style="margin-bottom: 20px; font-size: 12px;">
+                <p><strong>Billed To:</strong> ${schoolName}</p>
+                <p><strong>School ID:</strong> ${schoolId || 'N/A'}</p>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Description</th>
+                        <th>Allocated Qty</th>
+                        <th style="text-align: right;">Amount</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Student Seats Allocation (R32/seat)</td>
+                        <td>${item?.studentCount || '—'} Seats</td>
+                        <td style="text-align: right;">R${(item?.studentCost || 0).toLocaleString()}</td>
+                    </tr>
+                    <tr>
+                        <td>Teacher Seats Allocation (R105/seat)</td>
+                        <td>${item?.teacherCount || '—'} Seats</td>
+                        <td style="text-align: right;">R${(item?.teacherCost || 0).toLocaleString()}</td>
+                    </tr>
+                    <tr class="total-row">
+                        <td colspan="2">Total Paid (${item?.billingCycle || 'monthly'})</td>
+                        <td style="text-align: right;">R${amount}</td>
+                    </tr>
+                </tbody>
+            </table>
+            <div class="footer">
+                Thank you for your payment. If you have any questions, please contact support.
+            </div>
+        `;
+
+        generatePDFDocument({
+            title: `Invoice_${invoiceId}`,
+            filename: `Invoice_${invoiceId}.pdf`,
+            contentHtml,
+        });
+    };
+
+    if (loading && historyList.length === 0) {
+        return <div className="p-4 text-center text-xs text-slate-400 animate-pulse">Loading invoices...</div>;
+    }
+
+    if (historyList.length === 0) {
+        return <div className="p-4 text-center text-xs text-slate-400">No invoices available.</div>;
+    }
+
+    return (
+        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 p-5 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-700 pb-3">
+                <h3 className="text-sm font-black text-slate-800 dark:text-white flex items-center gap-2">
+                    <Receipt size={16} className="text-indigo-500" /> Invoices & Receipts
+                </h3>
+            </div>
+
+            <div className="divide-y divide-slate-100 dark:divide-slate-700/60">
+                {historyList.slice(0, 10).map((item, index) => {
+                    const displayId = (item?.id || item?.invoiceId || `INV-${index}`).toString().slice(0, 8).toUpperCase();
+                    const formattedDate = item?.date instanceof Date ? item.date.toLocaleDateString() : 'Recent';
+
+                    return (
+                        <div key={item?.id || index} className="py-3 flex items-center justify-between text-xs">
+                            <div>
+                                <p className="font-bold text-slate-700 dark:text-slate-200">Invoice #{displayId}</p>
+                                <p className="text-[10px] text-slate-400">{formattedDate}</p>
+                            </div>
+                            <div className="flex items-center gap-3">
+                                <div className="text-right">
+                                    <p className="font-black text-slate-800 dark:text-white">
+                                        R{(item?.amount ?? item?.totalAmount ?? 0).toLocaleString()}
+                                    </p>
+                                    <span className={`text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded ${item?.status === 'paid'
+                                        ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400'
+                                        : 'bg-amber-50 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400'
+                                        }`}>
+                                        {item?.status || 'completed'}
+                                    </span>
+                                </div>
+
+                                {/* Download Invoice Button */}
+                                <button
+                                    onClick={() => handleDownloadInvoice(item)}
+                                    className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 text-[11px] font-bold transition-all active:scale-95"
+                                >
+                                    <Download size={13} /> Invoice
+                                </button>
+                            </div>
+                        </div>
+                    );
+                })}
+            </div>
+        </div>
+    );
+}
+
 // ─── COUNTDOWN HOOK ───────────────────────────────────────────────────────────
 function useCountdown(targetDate) {
     const [timeLeft, setTimeLeft] = useState({ days: 0, hours: 0, minutes: 0, seconds: 0 });
 
     useEffect(() => {
         if (!targetDate) return;
+
         const calc = () => {
-            const diff = new Date(targetDate) - new Date();
-            if (diff <= 0) { setTimeLeft({ days: 0, hours: 0, minutes: 0, seconds: 0 }); return; }
+            const target = targetDate?.toDate ? targetDate.toDate() : new Date(targetDate);
+            const diff = target - new Date();
+
+            if (diff <= 0) {
+                setTimeLeft({ days: 0, hours: 0, minutes: 0, seconds: 0 });
+                return;
+            }
+
             setTimeLeft({
                 days: Math.floor(diff / 86400000),
                 hours: Math.floor((diff % 86400000) / 3600000),
@@ -119,6 +237,7 @@ function useCountdown(targetDate) {
                 seconds: Math.floor((diff % 60000) / 1000),
             });
         };
+
         calc();
         const id = setInterval(calc, 1000);
         return () => clearInterval(id);
@@ -128,42 +247,112 @@ function useCountdown(targetDate) {
 }
 
 // ─── COUNTDOWN CARD ───────────────────────────────────────────────────────────
-function CountdownCard({ nextBillingDate, tierId, accentColor, estimatedAmount }) {
+export function CountdownCard({
+    nextBillingDate,
+    accentColor = '#6366f1',
+    estimatedAmount = 0,
+    studentCount = FREE_STUDENT_BASE,
+    teacherCount = FREE_TEACHER_BASE,
+    monthlyUploadLimit = 0,
+    billingCycle = 'monthly'
+}) {
     const t = useCountdown(nextBillingDate);
 
+    // 1. Determine if current counts fall strictly within the trial baseline
+    const isFreeBaseline = studentCount <= FREE_STUDENT_BASE && teacherCount <= FREE_TEACHER_BASE;
+
+    // 2. Force payable amount to 0 if within baseline limits
+    const displayAmount = isFreeBaseline ? 0 : estimatedAmount;
+
+    const formattedDate = nextBillingDate
+        ? new Date(nextBillingDate?.toDate ? nextBillingDate.toDate() : nextBillingDate)
+            .toLocaleDateString('en-ZA', { day: 'numeric', month: 'long', year: 'numeric' })
+        : '—';
+
     return (
-        <div className="relative rounded-2xl p-5 overflow-hidden"
-            style={{ background: `linear-gradient(135deg, ${accentColor}18, ${accentColor}08)`, border: `1px solid ${accentColor}30` }}>
-            <div className="absolute -right-8 -top-8 w-32 h-32 rounded-full opacity-10" style={{ background: accentColor }} />
-            <div className="flex items-start justify-between mb-4">
+        <div
+            className="relative rounded-2xl p-5 overflow-hidden transition-all shadow-sm"
+            style={{
+                background: `linear-gradient(135deg, ${accentColor}15, ${accentColor}05)`,
+                border: `1px solid ${accentColor}30`
+            }}
+        >
+            {/* Ambient Background Glow */}
+            <div
+                className="absolute -right-8 -top-8 w-32 h-32 rounded-full opacity-10 blur-xl pointer-events-none"
+                style={{ background: accentColor }}
+            />
+
+            {/* Card Header & Financial Summary */}
+            <div className="flex items-start justify-between mb-4 flex-wrap gap-3">
                 <div>
                     <div className="flex items-center gap-2 mb-1">
-                        <CalendarClock size={14} style={{ color: accentColor }} />
-                        <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">Next Billing</span>
+                        <CalendarClock size={15} style={{ color: accentColor }} />
+                        <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                            Next Subscription Renewal
+                        </span>
                     </div>
-                    <p className="text-sm font-black text-slate-800 dark:text-white">
-                        {nextBillingDate
-                            ? new Date(nextBillingDate).toLocaleDateString('en-ZA', { day: 'numeric', month: 'long', year: 'numeric' })
-                            : '—'}
+
+                    <p className="text-sm font-black text-slate-800 dark:text-slate-100">
+                        {formattedDate}
                     </p>
+
+                    {/* Active Seat Allocation Subtitle */}
+                    <div className="flex items-center gap-2 mt-1 flex-wrap">
+                        <p className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                            {studentCount} Students • {teacherCount} Teachers
+                        </p>
+
+                        {monthlyUploadLimit > 0 && (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 px-2 py-0.5 rounded-md border border-emerald-200 dark:border-emerald-800/50">
+                                <UploadCloud size={11} /> {monthlyUploadLimit} uploads/mo
+                            </span>
+                        )}
+                    </div>
                 </div>
-                <div className="text-right">
-                    <p className="text-[10px] text-slate-400 font-bold">Estimated due</p>
-                    <p className="text-lg font-black text-slate-800 dark:text-white">R{estimatedAmount.toLocaleString()}</p>
+
+                {/* Amount / Trial Status */}
+                <div className="text-right flex flex-col items-end">
+                    {isFreeBaseline ? (
+                        <div className="flex flex-col items-end">
+                            <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-wider text-emerald-700 dark:text-emerald-300 bg-emerald-100 dark:bg-emerald-900/60 px-2.5 py-1 rounded-full border border-emerald-300 dark:border-emerald-700">
+                                <Sparkles size={12} /> Free Trial Active
+                            </span>
+                            <span className="text-[10px] font-extrabold text-slate-400 mt-1">
+                                R0.00 / {billingCycle}
+                            </span>
+                        </div>
+                    ) : (
+                        <div>
+                            <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                                Estimated Due ({billingCycle})
+                            </p>
+                            <p className="text-xl font-black text-slate-900 dark:text-emerald-400">
+                                R{displayAmount.toLocaleString()}
+                            </p>
+                        </div>
+                    )}
                 </div>
             </div>
+
+            {/* Countdown Digits */}
             <div className="grid grid-cols-4 gap-2">
                 {[
-                    { value: t.days, label: 'Days' },
-                    { value: t.hours, label: 'Hours' },
-                    { value: t.minutes, label: 'Mins' },
-                    { value: t.seconds, label: 'Secs' },
+                    { value: t?.days, label: 'Days' },
+                    { value: t?.hours, label: 'Hours' },
+                    { value: t?.minutes, label: 'Mins' },
+                    { value: t?.seconds, label: 'Secs' },
                 ].map(({ value, label }) => (
-                    <div key={label} className="bg-white/60 dark:bg-slate-800/60 rounded-xl p-2 text-center backdrop-blur-sm">
-                        <p className="text-xl font-black tabular-nums text-slate-800 dark:text-white leading-none">
+                    <div
+                        key={label}
+                        className="bg-white/80 dark:bg-slate-800/80 border border-slate-100 dark:border-slate-700/60 rounded-xl p-2.5 text-center backdrop-blur-sm shadow-xs"
+                    >
+                        <p className="text-xl font-black tabular-nums text-slate-900 dark:text-white leading-none">
                             {String(value ?? 0).padStart(2, '0')}
                         </p>
-                        <p className="text-[9px] font-black uppercase tracking-wider mt-1" style={{ color: accentColor }}>{label}</p>
+                        <p className="text-[9px] font-black uppercase tracking-wider mt-1" style={{ color: accentColor }}>
+                            {label}
+                        </p>
                     </div>
                 ))}
             </div>
@@ -172,90 +361,310 @@ function CountdownCard({ nextBillingDate, tierId, accentColor, estimatedAmount }
 }
 
 // ─── ADDON QUANTITY SELECTOR ──────────────────────────────────────────────────
-function AddonQuantitySelector({ studentCount, setStudentCount, teacherCount, setTeacherCount, activeTierConfig }) {
-    const baseStudents = activeTierConfig.includedStudents ?? 50;
-    const baseTeachers = activeTierConfig.includedTeachers ?? 5;
-    const studentRate = activeTierConfig.perStudentPrice ?? 15;
-    const teacherRate = activeTierConfig.perTeacherPrice ?? 50;
 
-    const extraStudents = Math.max(0, studentCount - baseStudents);
-    const extraTeachers = Math.max(0, teacherCount - baseTeachers);
+/**
+ * Calculates graduated student pricing ONLY for seats above the free baseline (10 free).
+ */
+export function calculateTieredStudentCost(totalStudents) {
+    const total = Math.max(FREE_STUDENT_BASE, parseInt(totalStudents, 10) || FREE_STUDENT_BASE);
+    const paidStudents = total - FREE_STUDENT_BASE;
+
+    if (paidStudents <= 0) {
+        return {
+            totalCost: 0,
+            effectiveRate: 0,
+            paidStudents: 0,
+            activeTierLabel: 'Free Trial (10 Seats)'
+        };
+    }
+
+    let remaining = paidStudents;
+    let totalCost = 0;
+
+    // Tier 1: 1 - 150 paid seats @ R32
+    const t1 = Math.min(remaining, 150);
+    totalCost += t1 * 32;
+    remaining -= t1;
+
+    // Tier 2: 151 - 500 paid seats @ R26
+    if (remaining > 0) {
+        const t2 = Math.min(remaining, 350);
+        totalCost += t2 * 26;
+        remaining -= t2;
+    }
+
+    // Tier 3: 501 - 1000 paid seats @ R20
+    if (remaining > 0) {
+        const t3 = Math.min(remaining, 500);
+        totalCost += t3 * 20;
+        remaining -= t3;
+    }
+
+    // Tier 4: 1001+ paid seats @ R16
+    if (remaining > 0) {
+        totalCost += remaining * 16;
+    }
+
+    const effectiveRate = (totalCost / total).toFixed(2);
+
+    let activeTierLabel = 'R32/paid seat';
+    if (paidStudents > 1000) activeTierLabel = 'Enterprise Tier (R16/seat floor)';
+    else if (paidStudents > 500) activeTierLabel = 'Tier 3 Volume (R20/seat)';
+    else if (paidStudents > 150) activeTierLabel = 'Tier 2 Volume (R26/seat)';
+
+    return { totalCost, effectiveRate, paidStudents, activeTierLabel };
+}
+
+export function AddonQuantitySelector({
+    studentCount = FREE_STUDENT_BASE,
+    setStudentCount,
+    teacherCount = FREE_TEACHER_BASE,
+    setTeacherCount,
+    teacherRate = 105
+}) {
+    const [studentInput, setStudentInput] = useState(String(studentCount));
+    const [teacherInput, setTeacherInput] = useState(String(teacherCount));
+
+    useEffect(() => {
+        setStudentInput(String(Math.max(FREE_STUDENT_BASE, studentCount)));
+    }, [studentCount]);
+
+    useEffect(() => {
+        setTeacherInput(String(Math.max(FREE_TEACHER_BASE, teacherCount)));
+    }, [teacherCount]);
+
+    // ─── Student Handlers ───
+    const handleStudentInputChange = (e) => {
+        const raw = e.target.value;
+        setStudentInput(raw);
+        const parsed = parseInt(raw, 10);
+        if (!isNaN(parsed) && parsed >= FREE_STUDENT_BASE) {
+            setStudentCount(parsed);
+        }
+    };
+
+    const handleStudentBlur = () => {
+        const parsed = parseInt(studentInput, 10);
+        if (isNaN(parsed) || parsed < FREE_STUDENT_BASE) {
+            setStudentCount(FREE_STUDENT_BASE);
+            setStudentInput(String(FREE_STUDENT_BASE));
+        } else {
+            setStudentCount(parsed);
+            setStudentInput(String(parsed));
+        }
+    };
+
+    // ─── Teacher Handlers ───
+    const handleTeacherInputChange = (e) => {
+        const raw = e.target.value;
+        setTeacherInput(raw);
+        const parsed = parseInt(raw, 10);
+        if (!isNaN(parsed) && parsed >= FREE_TEACHER_BASE) {
+            setTeacherCount(parsed);
+        }
+    };
+
+    const handleTeacherBlur = () => {
+        const parsed = parseInt(teacherInput, 10);
+        if (isNaN(parsed) || parsed < FREE_TEACHER_BASE) {
+            setTeacherCount(FREE_TEACHER_BASE);
+            setTeacherInput(String(FREE_TEACHER_BASE));
+        } else {
+            setTeacherCount(parsed);
+            setTeacherInput(String(parsed));
+        }
+    };
+
+    const activeStudents = parseInt(studentInput, 10) || FREE_STUDENT_BASE;
+    const activeTeachers = parseInt(teacherInput, 10) || FREE_TEACHER_BASE;
+
+    const studentPricing = calculateTieredStudentCost(activeStudents);
+    const paidTeachers = Math.max(0, activeTeachers - FREE_TEACHER_BASE);
+    const totalTeacherCost = paidTeachers * teacherRate;
 
     return (
-        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 p-5 space-y-4">
+        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 p-5 space-y-5">
+            {/* Header */}
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-700/60 pb-3">
                 <div>
                     <h3 className="text-sm font-black text-slate-800 dark:text-white flex items-center gap-2">
-                        <Users size={16} className="text-indigo-500" /> Seat Allocations & Add-ons
+                        <Users size={16} className="text-indigo-500" /> Dynamic Seat Allocations
                     </h3>
-                    <p className="text-[11px] text-slate-400">Scale active learner and teacher limits for your school</p>
+                    <p className="text-[11px] text-slate-400">Includes 10 Students + 2 Teachers free during trial</p>
                 </div>
+                <span className="flex items-center gap-1 text-[10px] font-black text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 px-2.5 py-1 rounded-full border border-emerald-200 dark:border-emerald-800/50">
+                    <Sparkles size={12} /> Free Baseline Active
+                </span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {/* Students Control */}
-                <div className="rounded-xl p-4 bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-700">
-                    <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-2">
-                            <GraduationCap size={16} className="text-violet-500" />
-                            <span className="text-xs font-black text-slate-700 dark:text-slate-200">Student Seats</span>
-                        </div>
-                        <span className="text-[10px] font-bold text-slate-400">
-                            Includes {baseStudents} base
-                        </span>
-                    </div>
-                    <div className="flex items-center justify-between gap-3">
-                        <button
-                            onClick={() => setStudentCount(Math.max(10, studentCount - 10))}
-                            className="w-8 h-8 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 font-bold transition-colors"
-                        >
-                            <Minus size={14} />
-                        </button>
-                        <div className="text-center">
-                            <span className="text-lg font-black text-slate-800 dark:text-white">{studentCount}</span>
-                            <span className="text-[10px] text-slate-400 block">
-                                {extraStudents > 0 ? `+${extraStudents} extra (R${extraStudents * studentRate}/mo)` : 'Within base limit'}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {/* ─── STUDENTS CONTROL WITH BASELINE ─── */}
+                <div className="rounded-xl p-4 bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-700 flex flex-col justify-between space-y-3">
+                    <div>
+                        <div className="flex items-center justify-between mb-1">
+                            <div className="flex items-center gap-2">
+                                <GraduationCap size={16} className="text-violet-500" />
+                                <span className="text-xs font-black text-slate-700 dark:text-slate-200">Student Seats</span>
+                            </div>
+                            <span className="text-[10px] font-extrabold text-violet-600 dark:text-violet-400 bg-violet-50 dark:bg-violet-950/40 px-2 py-0.5 rounded-full border border-violet-200 dark:border-violet-800/50">
+                                {studentPricing.activeTierLabel}
                             </span>
                         </div>
-                        <button
-                            onClick={() => setStudentCount(studentCount + 10)}
-                            className="w-8 h-8 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 font-bold transition-colors"
-                        >
-                            <Plus size={14} />
-                        </button>
+                        <p className="text-[10px] text-slate-400">
+                            10 Free Baseline + <span className="font-bold text-slate-600 dark:text-slate-300">{studentPricing.paidStudents} Paid Seats</span>
+                        </p>
+                    </div>
+
+                    {/* Numeric Input & Step Controls */}
+                    <div className="flex items-center justify-between gap-2 pt-2">
+                        <div className="flex gap-1">
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    const next = Math.max(FREE_STUDENT_BASE, activeStudents - 50);
+                                    setStudentCount(next);
+                                    setStudentInput(String(next));
+                                }}
+                                disabled={activeStudents <= FREE_STUDENT_BASE}
+                                className="px-2 h-9 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-[10px] font-bold text-slate-500 hover:text-slate-800 dark:hover:text-white disabled:opacity-40 transition-colors"
+                            >
+                                -50
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    const next = Math.max(FREE_STUDENT_BASE, activeStudents - 10);
+                                    setStudentCount(next);
+                                    setStudentInput(String(next));
+                                }}
+                                disabled={activeStudents <= FREE_STUDENT_BASE}
+                                className="w-9 h-9 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 font-bold transition-colors"
+                            >
+                                <Minus size={14} />
+                            </button>
+                        </div>
+
+                        {/* Editable Number Input */}
+                        <div className="text-center">
+                            <input
+                                type="number"
+                                min={FREE_STUDENT_BASE}
+                                value={studentInput}
+                                onChange={handleStudentInputChange}
+                                onBlur={handleStudentBlur}
+                                className="w-24 text-center text-xl font-black text-slate-800 dark:text-white bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 focus:border-indigo-500 dark:focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/20 rounded-xl py-1 outline-none transition-all [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                            />
+                            <span className="text-[10px] font-bold text-slate-400 block mt-1">
+                                {studentPricing.totalCost === 0 ? 'R0.00 (Free Trial)' : `R${studentPricing.totalCost.toLocaleString()}/mo`}
+                            </span>
+                        </div>
+
+                        <div className="flex gap-1">
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    const next = activeStudents + 10;
+                                    setStudentCount(next);
+                                    setStudentInput(String(next));
+                                }}
+                                className="w-9 h-9 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 font-bold transition-colors"
+                            >
+                                <Plus size={14} />
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    const next = activeStudents + 50;
+                                    setStudentCount(next);
+                                    setStudentInput(String(next));
+                                }}
+                                className="px-2 h-9 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-[10px] font-bold text-slate-500 hover:text-slate-800 dark:hover:text-white transition-colors"
+                            >
+                                +50
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Progress Indicator */}
+                    <div className="pt-2 border-t border-slate-200/60 dark:border-slate-700/50">
+                        <div className="flex justify-between text-[9px] font-bold text-slate-400 mb-1">
+                            <span>10 Free</span>
+                            <span>+150 (R32)</span>
+                            <span>+500 (R26)</span>
+                            <span>+1k (R20)</span>
+                        </div>
+                        <div className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                            <div
+                                className="h-full bg-gradient-to-r from-violet-500 via-indigo-500 to-emerald-400 transition-all duration-300"
+                                style={{ width: `${Math.min(100, ((activeStudents - FREE_STUDENT_BASE) / 1000) * 100)}%` }}
+                            />
+                        </div>
                     </div>
                 </div>
 
-                {/* Teachers Control */}
-                <div className="rounded-xl p-4 bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-700">
-                    <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-2">
-                            <Users size={16} className="text-emerald-500" />
-                            <span className="text-xs font-black text-slate-700 dark:text-slate-200">Teacher Seats</span>
+                {/* ─── TEACHERS CONTROL WITH BASELINE ─── */}
+                <div className="rounded-xl p-4 bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-700 flex flex-col justify-between space-y-3">
+                    <div>
+                        <div className="flex items-center justify-between mb-1">
+                            <div className="flex items-center gap-2">
+                                <Users size={16} className="text-emerald-500" />
+                                <span className="text-xs font-black text-slate-700 dark:text-slate-200">Teacher Seats</span>
+                            </div>
+                            <span className="text-[10px] font-extrabold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 px-2 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800/50">
+                                {paidTeachers === 0 ? 'Free Trial' : `+${paidTeachers} Paid`}
+                            </span>
                         </div>
-                        <span className="text-[10px] font-bold text-slate-400">
-                            Includes {baseTeachers} base
-                        </span>
+                        <p className="text-[10px] text-slate-400">
+                            2 Free Baseline + <span className="font-bold text-slate-600 dark:text-slate-300">{paidTeachers} Additional</span>
+                        </p>
                     </div>
-                    <div className="flex items-center justify-between gap-3">
+
+                    <div className="flex items-center justify-between gap-3 pt-2">
                         <button
-                            onClick={() => setTeacherCount(Math.max(1, teacherCount - 1))}
-                            className="w-8 h-8 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 font-bold transition-colors"
+                            type="button"
+                            onClick={() => {
+                                const next = Math.max(FREE_TEACHER_BASE, activeTeachers - 1);
+                                setTeacherCount(next);
+                                setTeacherInput(String(next));
+                            }}
+                            disabled={activeTeachers <= FREE_TEACHER_BASE}
+                            className="w-9 h-9 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 font-bold transition-colors"
                         >
                             <Minus size={14} />
                         </button>
+
+                        {/* Editable Teacher Input */}
                         <div className="text-center">
-                            <span className="text-lg font-black text-slate-800 dark:text-white">{teacherCount}</span>
-                            <span className="text-[10px] text-slate-400 block">
-                                {extraTeachers > 0 ? `+${extraTeachers} extra (R${extraTeachers * teacherRate}/mo)` : 'Within base limit'}
+                            <input
+                                type="number"
+                                min={FREE_TEACHER_BASE}
+                                value={teacherInput}
+                                onChange={handleTeacherInputChange}
+                                onBlur={handleTeacherBlur}
+                                className="w-20 text-center text-xl font-black text-slate-800 dark:text-white bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 focus:border-indigo-500 dark:focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/20 rounded-xl py-1 outline-none transition-all [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                            />
+                            <span className="text-[10px] font-bold text-slate-400 block mt-1">
+                                {totalTeacherCost === 0 ? 'R0.00 (Free Trial)' : `R${totalTeacherCost.toLocaleString()}/mo`}
                             </span>
                         </div>
+
                         <button
-                            onClick={() => setTeacherCount(teacherCount + 1)}
-                            className="w-8 h-8 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 font-bold transition-colors"
+                            type="button"
+                            onClick={() => {
+                                const next = activeTeachers + 1;
+                                setTeacherCount(next);
+                                setTeacherInput(String(next));
+                            }}
+                            className="w-9 h-9 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 font-bold transition-colors"
                         >
                             <Plus size={14} />
                         </button>
+                    </div>
+
+                    <div className="pt-2 border-t border-slate-200/60 dark:border-slate-700/50 flex items-center justify-between text-[10px] text-slate-400">
+                        <span className="flex items-center gap-1">
+                            <ShieldCheck size={12} className="text-emerald-500" /> Baseline trial includes full PDF processing
+                        </span>
                     </div>
                 </div>
             </div>
@@ -263,298 +672,310 @@ function AddonQuantitySelector({ studentCount, setStudentCount, teacherCount, se
     );
 }
 
-// ─── PLAN CARD ────────────────────────────────────────────────────────────────
-function PlanCard({ plan, currentTierId, onSelect, billingCycle, studentCount, teacherCount }) {
-    const isCurrent = plan.id === currentTierId;
-    const isUp = isTierUpgrade(currentTierId, plan.id);
-    const Icon = plan.icon;
-    const calculatedPrice = calculateSubscriptionTotal(plan, studentCount, teacherCount, billingCycle);
+
+// DYNAMIC STANDARD USAGE CARD
+export function DynamicUsageCard({ studentCount, teacherCount, billingCycle, onCheckout }) {
+    const quote = calculateCustomUsageQuote(studentCount, teacherCount, billingCycle);
+
+    const cycleLabelMap = {
+        monthly: 'month',
+        quarterly: 'quarter (3 months)',
+        yearly: 'year (12 months)'
+    };
+
+    const isFreeBaseline = quote.isFreeBaseline;
+    const displayMonthlyEquivalent = isFreeBaseline ? 0 : quote.monthlyEquivalent;
+    const displayPeriodTotal = isFreeBaseline ? 0 : quote.periodTotal;
+
+    const paidStudents = Math.max(0, studentCount - FREE_STUDENT_BASE);
+    const paidTeachers = Math.max(0, teacherCount - FREE_TEACHER_BASE);
+
+    const handleProceedToCheckout = () => {
+        onCheckout({
+            ...quote,
+            studentCount,
+            teacherCount,
+            billingCycle,
+            periodTotal: displayPeriodTotal,
+            monthlyEquivalent: displayMonthlyEquivalent,
+            isFreeBaseline,
+            action: isFreeBaseline ? 'ACTIVATE_FREE' : 'INITIATE_CHECKOUT'
+        });
+    };
 
     return (
-        <div
-            className={`relative rounded-3xl p-6 border flex flex-col justify-between transition-all duration-200 min-h-[360px] ${isCurrent
-                    ? `ring-2 bg-gradient-to-br ${plan.gradientBg}`
-                    : 'border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-800/90 hover:border-slate-300 dark:hover:border-slate-700 hover:shadow-xl hover:shadow-slate-200/50 dark:hover:shadow-none'
-                }`}
-            style={isCurrent ? { '--tw-ring-color': plan.accentColor } : {}}
-        >
-            {/* Top Badges */}
-            {plan.popular && !isCurrent && (
-                <div
-                    className="absolute -top-3.5 left-1/2 -translate-x-1/2 px-4 py-1 rounded-full text-[10px] font-black uppercase tracking-widest text-white shadow-md"
-                    style={{ background: plan.accentColor }}
-                >
-                    Most Popular
-                </div>
-            )}
-            {isCurrent && (
-                <div className="absolute -top-3.5 right-6 px-3.5 py-1 rounded-full text-[10px] font-black uppercase tracking-widest text-white bg-slate-900 dark:bg-slate-700 shadow-md">
-                    Current Plan
-                </div>
-            )}
-
-            {/* Header & Pricing Section */}
-            <div>
-                <div className="flex items-center gap-3.5 mb-5">
-                    <div className={`w-12 h-12 rounded-2xl flex items-center justify-center bg-gradient-to-br ${plan.gradient} flex-shrink-0 shadow-md`}>
-                        <Icon size={20} className="text-white" />
+        <div className="relative rounded-3xl p-6 sm:p-8 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-xl max-w-2xl mx-auto transition-all">
+            {/* Header Badge */}
+            <div className="flex items-center justify-between gap-4 mb-6">
+                <div className="flex items-center gap-3">
+                    <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-500 to-indigo-600 flex items-center justify-center text-white shadow-md">
+                        <Sparkles size={22} />
                     </div>
                     <div>
-                        <h4 className="text-lg font-black text-slate-800 dark:text-white leading-tight">
-                            {plan.label}
-                        </h4>
-                        <p className="text-xs text-slate-400 font-medium mt-0.5">
-                            {plan.seats?.students ? `${plan.seats.students} Students • ${plan.seats.teachers} Teachers` : 'Custom Seats'}
+                        <h3 className="text-lg font-black text-slate-800 dark:text-white leading-tight">
+                            {isFreeBaseline ? 'Free Baseline Subscription' : 'Custom Usage Subscription'}
+                        </h3>
+                        <p className="text-xs text-slate-400 font-medium">
+                            {isFreeBaseline
+                                ? 'Default allocation for new school accounts'
+                                : 'Tailored to your exact budget & school size'}
                         </p>
                     </div>
                 </div>
 
-                {/* Clear Pricing Hero */}
-                <div className="mb-6 p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-900/40 border border-slate-100 dark:border-slate-800/60">
-                    {calculatedPrice === 0 ? (
-                        <p className="text-sm font-bold text-slate-500 dark:text-slate-400 py-1">
-                            Free Trial Package
-                        </p>
-                    ) : (
-                        <div>
-                            <div className="flex items-baseline gap-1">
-                                <span className="text-2xl font-black text-slate-900 dark:text-white">
-                                    R{billingCycle === 'annual'
-                                        ? Math.round(calculatedPrice / 12).toLocaleString()
-                                        : calculatedPrice.toLocaleString()}
-                                </span>
-                                <span className="text-xs font-bold text-slate-400">/month</span>
-                            </div>
-                            <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium mt-1">
-                                {billingCycle === 'annual'
-                                    ? `Billed as R${calculatedPrice.toLocaleString()} yearly`
-                                    : 'Billed monthly'}
-                            </p>
-                        </div>
-                    )}
-                </div>
-
-                {/* Feature List */}
-                <ul className="space-y-3 mb-6">
-                    {plan.features.map((f) => (
-                        <li key={f} className="flex items-start gap-2.5 text-xs text-slate-600 dark:text-slate-300 font-medium leading-relaxed">
-                            <CheckCircle2 size={15} style={{ color: plan.accentColor }} className="flex-shrink-0 mt-0.5" />
-                            <span>{f}</span>
-                        </li>
-                    ))}
-                </ul>
-            </div>
-
-            {/* Sticky Action Button */}
-            <div className="mt-auto pt-2">
-                {!isCurrent && (
-                    <button
-                        onClick={() => onSelect(plan)}
-                        className={`w-full flex items-center justify-center gap-2 py-3.5 rounded-2xl text-xs font-black transition-all shadow-md active:scale-[0.98] ${isUp
-                                ? 'text-white hover:opacity-95 shadow-indigo-500/10'
-                                : 'text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-700/80 hover:bg-slate-200 dark:hover:bg-slate-700'
-                            }`}
-                        style={isUp ? { background: `linear-gradient(135deg, ${plan.accentColor}, ${plan.accentColor}dd)` } : {}}
-                    >
-                        {isUp ? <ArrowUpRight size={14} /> : <ArrowDownRight size={14} />}
-                        {isUp ? `Upgrade to ${plan.label}` : `Downgrade to ${plan.label}`}
-                    </button>
-                )}
-                {isCurrent && (
-                    <div
-                        className="w-full flex items-center justify-center gap-2 py-3.5 rounded-2xl text-xs font-black text-white shadow-md"
-                        style={{ background: `linear-gradient(135deg, ${plan.accentColor}, ${plan.accentColor}dd)` }}
-                    >
-                        <CheckCircle2 size={14} /> Active Plan
-                    </div>
-                )}
-            </div>
-        </div>
-    );
-}
-
-// ─── BILLING TABLE ────────────────────────────────────────────────────────────
-function BillingHistory({ records, loading, accentColor }) {
-    const [expanded, setExpanded] = useState(false);
-    const shown = expanded ? records : records.slice(0, 4);
-
-    if (loading) return (
-        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 p-8 text-center">
-            <RefreshCw size={20} className="text-slate-300 mx-auto mb-2 animate-spin" />
-            <p className="text-xs text-slate-400">Loading billing history…</p>
-        </div>
-    );
-
-    if (records.length === 0) return (
-        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 p-8 text-center">
-            <Receipt size={28} className="text-slate-200 dark:text-slate-600 mx-auto mb-2" />
-            <p className="text-xs text-slate-400 font-bold">No billing history yet.</p>
-            <p className="text-[10px] text-slate-300 dark:text-slate-600 mt-1">Payments appear here after your first billing cycle.</p>
-        </div>
-    );
-
-    const total = records.reduce((s, r) => s + (r.amount ?? 0), 0);
-
-    return (
-        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                    <CreditCard size={15} style={{ color: accentColor }} />
-                    <h3 className="text-sm font-black text-slate-800 dark:text-white">Billing History</h3>
-                </div>
-                <div className="flex items-center gap-3">
-                    <span className="text-[10px] text-slate-400 font-bold">
-                        Total paid: <span className="font-black text-slate-700 dark:text-slate-200">R{total.toLocaleString()}</span>
+                {isFreeBaseline ? (
+                    <span className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider text-emerald-700 dark:text-emerald-300 bg-emerald-100 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-700">
+                        Free Baseline Active
                     </span>
-                    <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-black border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">
-                        <Download size={11} /> Statement
-                    </button>
+                ) : quote.discountPercent > 0 && (
+                    <span className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800">
+                        {quote.discountPercent}% Discount Applied
+                    </span>
+                )}
+            </div>
+
+            {/* Pricing Display */}
+            <div className="mb-6 p-5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800">
+                <div className="flex items-baseline gap-2">
+                    <span className="text-3xl sm:text-4xl font-black text-slate-900 dark:text-white">
+                        R{displayMonthlyEquivalent.toLocaleString()}
+                    </span>
+                    <span className="text-xs font-bold text-slate-400">/month</span>
+                </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-1">
+                    {isFreeBaseline
+                        ? '100% Free baseline allocation. Add seats anytime as your school grows.'
+                        : billingCycle === 'monthly'
+                            ? 'Billed monthly. Adjust or cancel anytime.'
+                            : `Billed as R${displayPeriodTotal.toLocaleString()} per ${cycleLabelMap[billingCycle]}`}
+                </p>
+            </div>
+
+            {/* Breakdown List */}
+            <div className="space-y-3.5 mb-8">
+                <h4 className="text-xs font-black uppercase tracking-wider text-slate-400">
+                    Included Allocation Breakdown
+                </h4>
+
+                {/* Teachers Line */}
+                <div className="flex items-center justify-between p-3.5 rounded-xl bg-slate-100/70 dark:bg-slate-800/40">
+                    <div className="flex items-center gap-3 text-xs font-bold text-slate-700 dark:text-slate-200">
+                        <Users size={16} className="text-indigo-500" />
+                        <span>{teacherCount} Teacher Accounts</span>
+                    </div>
+                    <span className="text-xs font-black text-slate-900 dark:text-white">
+                        {paidTeachers === 0
+                            ? 'Free (Baseline)'
+                            : `R${(paidTeachers * UNIT_PRICES.teacherPerMonth).toLocaleString()}/mo`}
+                    </span>
+                </div>
+
+                {/* Students Line */}
+                <div className="flex items-center justify-between p-3.5 rounded-xl bg-slate-100/70 dark:bg-slate-800/40">
+                    <div className="flex items-center gap-3 text-xs font-bold text-slate-700 dark:text-slate-200">
+                        <GraduationCap size={16} className="text-indigo-500" />
+                        <span>{studentCount} Student Seats</span>
+                    </div>
+                    <span className="text-xs font-black text-slate-900 dark:text-white">
+                        {paidStudents === 0
+                            ? 'Free (Baseline)'
+                            : `R${(paidStudents * UNIT_PRICES.studentPerMonth).toLocaleString()}/mo`}
+                    </span>
+                </div>
+
+                {/* Upload Allowance Line */}
+                <div className="flex items-center justify-between p-3.5 rounded-xl bg-slate-100/70 dark:bg-slate-800/40 border border-indigo-100 dark:border-indigo-950">
+                    <div className="flex items-center gap-3 text-xs font-bold text-slate-700 dark:text-slate-200">
+                        <UploadCloud size={16} className="text-emerald-500" />
+                        <span>Monthly Document Processing Limit</span>
+                    </div>
+                    <span className="text-xs font-black text-emerald-600 dark:text-emerald-400">
+                        {quote.monthlyUploadLimit} Uploads / month
+                    </span>
                 </div>
             </div>
-            <div className="overflow-x-auto">
-                <table className="w-full text-xs min-w-[500px]">
-                    <thead>
-                        <tr className="border-b border-slate-100 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/80">
-                            {['Invoice', 'Description', 'Method', 'Amount', 'Status', ''].map(h => (
-                                <th key={h} className="text-left px-4 py-3 font-black text-slate-400 uppercase tracking-wider text-[9px]">{h}</th>
-                            ))}
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {shown.map((r) => (
-                            <tr key={r.id} className="border-b border-slate-50 dark:border-slate-700/50 hover:bg-slate-50 dark:hover:bg-slate-700/30 transition-colors">
-                                <td className="px-4 py-3 font-black text-slate-500 text-[10px] font-mono">{r.invoiceId || r.id}</td>
-                                <td className="px-4 py-3">
-                                    <p className="font-bold text-slate-700 dark:text-slate-200">{r.description}</p>
-                                    <p className="text-slate-400 text-[10px]">
-                                        {r.date instanceof Date
-                                            ? r.date.toLocaleDateString('en-ZA', { day: 'numeric', month: 'short', year: 'numeric' })
-                                            : '—'}
-                                    </p>
-                                </td>
-                                <td className="px-4 py-3 text-slate-500">{r.method || '—'}</td>
-                                <td className="px-4 py-3 font-black text-slate-800 dark:text-white">R{(r.amount ?? 0).toLocaleString()}</td>
-                                <td className="px-4 py-3">
-                                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[9px] font-black uppercase ${r.status === 'paid'
-                                        ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400'
-                                        : 'bg-red-50 text-red-500 dark:bg-red-900/30 dark:text-red-400'}`}>
-                                        {r.status === 'paid' ? <CheckCircle2 size={9} /> : <XCircle size={9} />}
-                                        {r.status || 'unknown'}
-                                    </span>
-                                </td>
-                                <td className="px-4 py-3">
-                                    <button className="text-slate-300 hover:text-slate-500 transition-colors"><Download size={13} /></button>
-                                </td>
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
+
+            {/* Policy Notice */}
+            <div className="space-y-2 mb-8 text-[11px] text-slate-500 dark:text-slate-400">
+                <div className="flex items-center gap-2">
+                    <CheckCircle2 size={13} className="text-emerald-500 flex-shrink-0" />
+                    <span>Instant access to tests, exams, and student analytics dashboards.</span>
+                </div>
+                <div className="flex items-center gap-2">
+                    <CheckCircle2 size={13} className="text-emerald-500 flex-shrink-0" />
+                    <span>Adjust student/teacher limits anytime during active term.</span>
+                </div>
             </div>
-            {records.length > 4 && (
-                <button onClick={() => setExpanded(e => !e)}
-                    className="w-full flex items-center justify-center gap-2 py-3 text-[11px] font-black text-slate-400 hover:text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700/30 transition-colors border-t border-slate-100 dark:border-slate-700">
-                    {expanded
-                        ? <><ChevronUp size={13} /> Show less</>
-                        : <><ChevronDown size={13} /> Show all {records.length} invoices</>}
-                </button>
-            )}
+
+            {/* Direct Checkout Button */}
+            <button
+                type="button"
+                onClick={handleProceedToCheckout}
+                className="w-full flex items-center justify-center gap-2 py-4 rounded-2xl text-xs font-black text-white bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 transition-all shadow-lg shadow-indigo-500/25 active:scale-[0.98]"
+            >
+                {isFreeBaseline ? (
+                    <>
+                        <CheckCircle2 size={16} />
+                        Activate Free Baseline Plan
+                    </>
+                ) : (
+                    <>
+                        <CreditCard size={16} />
+                        Proceed to Checkout
+                        <ArrowRight size={14} className="ml-1" />
+                    </>
+                )}
+            </button>
         </div>
     );
 }
+
 
 // ─── ACCOUNT STATEMENT ────────────────────────────────────────────────────────
-function AccountStatement({ records, currentTierId, schoolName, billingCycle, accentColor, totalEstimatedPrice }) {
-    const totalPaid = records.reduce((s, r) => s + (r.amount ?? 0), 0);
-    const monthsActive = records.length;
-    const avgMonthly = monthsActive ? Math.round(totalPaid / monthsActive) : 0;
+export function AccountStatement({
+    schoolId,
+    schoolName = 'School',
+    records = [],
+    currentQuote
+}) {
+    const studentCount = currentQuote?.studentCount ?? FREE_STUDENT_BASE;
+    const teacherCount = currentQuote?.teacherCount ?? FREE_TEACHER_BASE;
+    const rawPeriodTotal = currentQuote?.periodTotal ?? currentQuote?.totalCost ?? 0;
+    const billingCycle = currentQuote?.billingCycle || 'monthly';
 
-    const stats = [
-        { label: 'Total Paid (All Time)', value: `R${totalPaid.toLocaleString()}`, icon: TrendingUp, color: accentColor },
-        { label: 'Months Active', value: monthsActive, icon: CalendarClock, color: '#10b981' },
-        { label: 'Avg Monthly Spend', value: `R${avgMonthly.toLocaleString()}`, icon: Receipt, color: '#f59e0b' },
-        { label: 'Next Payment', value: totalEstimatedPrice > 0 ? `R${totalEstimatedPrice.toLocaleString()}` : 'Free', icon: CreditCard, color: '#8b5cf6' },
-    ];
+    // 1. Determine trial status purely from seat capacity thresholds
+    const isFreeBaseline = studentCount <= FREE_STUDENT_BASE && teacherCount <= FREE_TEACHER_BASE;
 
-    return (
-        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 p-5">
-            <div className="flex items-center gap-2 mb-4">
-                <FileText size={15} style={{ color: accentColor }} />
-                <h3 className="text-sm font-black text-slate-800 dark:text-white">Account Statement</h3>
-                <span className="ml-auto text-[10px] text-slate-400">{schoolName}</span>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-                {stats.map(({ label, value, icon: Icon, color }) => (
-                    <div key={label} className="rounded-xl p-3 flex items-center gap-3"
-                        style={{ background: `${color}10`, border: `1px solid ${color}20` }}>
-                        <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: `${color}20` }}>
-                            <Icon size={14} style={{ color }} />
-                        </div>
-                        <div>
-                            <p className="text-sm font-black text-slate-800 dark:text-white leading-none">{value}</p>
-                            <p className="text-[9px] font-bold text-slate-400 mt-0.5 leading-tight">{label}</p>
-                        </div>
-                    </div>
-                ))}
-            </div>
-        </div>
-    );
-}
+    // 2. Override payable total to 0 if within baseline limits
+    const displayTotal = isFreeBaseline ? 0 : rawPeriodTotal;
 
-// ─── CHANGE PLAN MODAL ────────────────────────────────────────────────────────
-function ChangePlanModal({ targetPlan, currentTierId, billingCycle, studentCount, teacherCount, onConfirm, onCancel }) {
-    const isUp = isTierUpgrade(currentTierId, targetPlan.id);
-    const Icon = targetPlan.icon;
-    const calculatedPrice = calculateSubscriptionTotal(targetPlan, studentCount, teacherCount, billingCycle);
+    const handleDownloadStatement = () => {
+        const todayStr = new Date().toLocaleDateString('en-ZA');
 
-    return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-            <div className="bg-white dark:bg-slate-900 rounded-3xl p-8 max-w-sm w-full border border-slate-100 dark:border-slate-700 shadow-2xl">
-                <div className={`w-16 h-16 rounded-2xl mx-auto flex items-center justify-center mb-5 bg-gradient-to-br ${targetPlan.gradient}`}>
-                    <Icon size={28} className="text-white" />
+        const rowsHtml = records.map((r, index) => {
+            const invoiceId = (r?.id || r?.invoiceId || `INV-${index}`).toString().slice(0, 8).toUpperCase();
+
+            let formattedDate = 'Recent';
+            if (r?.date?.toDate && typeof r.date.toDate === 'function') {
+                formattedDate = r.date.toDate().toLocaleDateString('en-ZA');
+            } else if (r?.date instanceof Date) {
+                formattedDate = r.date.toLocaleDateString('en-ZA');
+            } else if (typeof r?.date === 'string') {
+                formattedDate = new Date(r.date).toLocaleDateString('en-ZA');
+            }
+
+            const amount = (r?.amount ?? r?.totalAmount ?? 0).toLocaleString();
+            return `
+                <tr>
+                    <td>${formattedDate}</td>
+                    <td>Invoice #${invoiceId}</td>
+                    <td>${r?.status?.toUpperCase() || 'PAID'}</td>
+                    <td style="text-align: right;">R${amount}</td>
+                </tr>
+            `;
+        }).join('');
+
+        const paidStudents = Math.max(0, studentCount - FREE_STUDENT_BASE);
+        const paidTeachers = Math.max(0, teacherCount - FREE_TEACHER_BASE);
+
+        const contentHtml = `
+            <div class="header">
+                <div>
+                    <div class="logo">${schoolName.toUpperCase()}</div>
+                    <p style="font-size: 12px; color: #64748b; margin-top: 4px;">Official Account Billing Statement</p>
                 </div>
-                <h2 className="text-lg font-black text-slate-800 dark:text-white text-center mb-1">
-                    {isUp ? 'Upgrade to' : 'Downgrade to'} {targetPlan.label}
-                </h2>
-                <p className="text-xs text-slate-400 text-center mb-6">
-                    {isUp
-                        ? `You'll be billed R${calculatedPrice.toLocaleString()}/month (${studentCount} students, ${teacherCount} teachers) starting today.`
-                        : 'Your current plan remains active until the end of the billing period.'}
+                <div class="meta">
+                    <p><strong>Statement Date:</strong> ${todayStr}</p>
+                    <p><strong>School ID:</strong> ${schoolId || 'N/A'}</p>
+                    <p><strong>Account Status:</strong> ${isFreeBaseline ? 'FREE TRIAL BASELINE' : 'ACTIVE SUBSCRIPTION'}</p>
+                </div>
+            </div>
+
+            <div style="background: #f8fafc; padding: 15px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #e2e8f0;">
+                <h4 style="margin: 0 0 8px 0; font-size: 13px; color: #1e293b;">Active Allocation Summary</h4>
+                <p style="margin: 3px 0; font-size: 12px;">
+                    <strong>Student Capacity:</strong> ${studentCount} Seats 
+                    <span style="color: #64748b;">(10 Free Trial + ${paidStudents} Paid Volume Seats)</span>
                 </p>
-                {isUp && (
-                    <div className="rounded-xl p-4 mb-5"
-                        style={{ background: `${targetPlan.accentColor}10`, border: `1px solid ${targetPlan.accentColor}25` }}>
-                        <p className="text-[10px] font-black uppercase tracking-wider mb-2" style={{ color: targetPlan.accentColor }}>
-                            You'll gain access to
+                <p style="margin: 3px 0; font-size: 12px;">
+                    <strong>Teacher Capacity:</strong> ${teacherCount} Seats 
+                    <span style="color: #64748b;">(2 Free Trial + ${paidTeachers} Paid Seats)</span>
+                </p>
+                <p style="margin: 3px 0; font-size: 12px;">
+                    <strong>Current Subscription Total:</strong> 
+                    ${isFreeBaseline ? '<span style="color: #059669; font-weight: bold;">R0.00 (Free Trial Baseline)</span>' : `R${displayTotal.toLocaleString()} / ${billingCycle}`}
+                </p>
+            </div>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Reference / Invoice</th>
+                        <th>Status</th>
+                        <th style="text-align: right;">Amount Paid</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rowsHtml.length > 0 ? rowsHtml : '<tr><td colspan="4" style="text-align:center; color: #94a3b8; padding: 20px;">No paid invoice transactions recorded (Free Trial Baseline).</td></tr>'}
+                </tbody>
+            </table>
+
+            <div class="footer">
+                This document is an automated statement of account generated on ${todayStr}.
+            </div>
+        `;
+
+        if (typeof generatePDFDocument === 'function') {
+            generatePDFDocument({
+                title: `Statement_${schoolName}_${todayStr}`,
+                filename: `Statement_${schoolName}.pdf`,
+                contentHtml,
+            });
+        }
+    };
+
+    return (
+        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 p-6 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-700 pb-4">
+                <div>
+                    <h3 className="text-base font-black text-slate-800 dark:text-white flex items-center gap-2">
+                        <FileText size={18} className="text-indigo-500" /> Account Statement
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-0.5">Download official account transactions and usage history</p>
+                </div>
+
+                <button
+                    onClick={handleDownloadStatement}
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-black shadow-md shadow-indigo-500/20 transition-all active:scale-95"
+                >
+                    <Download size={15} /> Download Full Statement
+                </button>
+            </div>
+
+            {/* Quick Summary Preview */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2">
+                <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-700">
+                    <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">School Account</p>
+                    <p className="text-sm font-black text-slate-800 dark:text-white mt-1">{schoolName}</p>
+                </div>
+                <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-700">
+                    <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Active Allocations</p>
+                    <p className="text-sm font-black text-slate-800 dark:text-white mt-1">
+                        {studentCount} Students • {teacherCount} Teachers
+                    </p>
+                </div>
+                <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-900/50 border border-slate-100 dark:border-slate-700">
+                    <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Billing Cycle Equivalent</p>
+                    {isFreeBaseline ? (
+                        <p className="text-sm font-black text-emerald-600 dark:text-emerald-400 mt-1 flex items-center gap-1">
+                            <Sparkles size={14} /> R0.00 (Free Trial)
                         </p>
-                        <ul className="space-y-1">
-                            {targetPlan.features.slice(0, 4).map(f => (
-                                <li key={f} className="flex items-center gap-2 text-[11px] text-slate-600 dark:text-slate-300">
-                                    <CheckCircle2 size={10} style={{ color: targetPlan.accentColor }} />{f}
-                                </li>
-                            ))}
-                        </ul>
-                    </div>
-                )}
-                {!isUp && (
-                    <div className="rounded-xl p-4 mb-5 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700">
-                        <div className="flex items-start gap-2">
-                            <AlertTriangle size={14} className="text-amber-600 flex-shrink-0 mt-0.5" />
-                            <p className="text-[11px] text-amber-700 dark:text-amber-300 font-medium">
-                                Downgrading may remove access to some features and restrict your limits. Data exceeding new limits won't be deleted.
-                            </p>
-                        </div>
-                    </div>
-                )}
-                <div className="flex gap-3">
-                    <button onClick={onCancel}
-                        className="flex-1 py-3 rounded-xl text-xs font-black text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
-                        Cancel
-                    </button>
-                    <button onClick={() => onConfirm(targetPlan)}
-                        className="flex-1 py-3 rounded-xl text-xs font-black text-white transition-opacity hover:opacity-90"
-                        style={{ background: `linear-gradient(135deg, ${targetPlan.accentColor}, ${targetPlan.accentColor}cc)` }}>
-                        {isUp ? 'Confirm Upgrade' : 'Confirm Downgrade'}
-                    </button>
+                    ) : (
+                        <p className="text-sm font-black text-emerald-600 dark:text-emerald-400 mt-1">
+                            R{displayTotal.toLocaleString()} / {billingCycle}
+                        </p>
+                    )}
                 </div>
             </div>
         </div>
@@ -562,38 +983,26 @@ function ChangePlanModal({ targetPlan, currentTierId, billingCycle, studentCount
 }
 
 // ─── MAIN EXPORT ──────────────────────────────────────────────────────────────
-export default function SubscriptionManager({ currentTier = 'free', schoolName, schoolId, school, onTierChange }) {
+export default function SubscriptionManager({ schoolName, schoolId, school, onTierChange }) {
     const [billingCycle, setBillingCycle] = useState('monthly');
     const [activeSection, setActiveSection] = useState('plan');
-    const [selectedPlan, setSelectedPlan] = useState(null);
-    const [pendingPlan, setPendingPlan] = useState(null);
     const [isPaymentOpen, setIsPaymentOpen] = useState(false);
+    const [pendingQuote, setPendingQuote] = useState(null);
 
     // Quantity state for add-on allocations initialized from school parameters
     const [studentCount, setStudentCount] = useState(school?.studentLimit || school?.studentCount || 50);
     const [teacherCount, setTeacherCount] = useState(school?.teacherLimit || school?.teacherCount || 5);
 
-    // Active tier state & billing history hooks
-    const { tier: fetchedTierId } = useCurrentTier(schoolId);
-    const activeTierId = fetchedTierId || currentTier;
+    // Live calculated usage quote
+    const currentQuote = useMemo(() => {
+        return calculateCustomUsageQuote(studentCount, teacherCount, billingCycle);
+    }, [studentCount, teacherCount, billingCycle]);
 
-    const { records: billingRecords, loading: billingLoading } = useBillingHistory(schoolId);
+    // Convenient reference for legacy child components & condition checks
+    const totalEstimatedPrice = currentQuote.periodTotal;
+    const accentColor = '#6366f1';
 
-    // Configs derived from active tier
-    const activeTierConfig = getTierConfig(activeTierId);
-    const accentColor = activeTierConfig.accentColor;
-
-    // Computed total price for active configuration
-    const totalEstimatedPrice = useMemo(() => {
-        return calculateSubscriptionTotal(activeTierConfig, studentCount, teacherCount, billingCycle);
-    }, [activeTierConfig, studentCount, teacherCount, billingCycle]);
-
-    // Next upgrade tier resolution
-    const currentTierIndex = TIER_ORDER.indexOf(activeTierId);
-    const nextTierId = TIER_ORDER[Math.min(currentTierIndex + 1, TIER_ORDER.length - 1)];
-    const nextTierConfig = getTierConfig(nextTierId);
-
-    // Calculate next billing date cleanly from school record
+    // Next billing date calculation
     const nextBillingDate = useMemo(() => {
         const raw = school?.nextBillingDate || school?.billingStartDate || school?.subscribedAt;
         if (!raw) {
@@ -608,200 +1017,133 @@ export default function SubscriptionManager({ currentTier = 'free', schoolName, 
         return next;
     }, [school?.nextBillingDate, school?.billingStartDate, school?.subscribedAt]);
 
-    const handleConfirmChange = (plan) => {
-        const price = calculateSubscriptionTotal(plan, studentCount, teacherCount, billingCycle);
-        if (price > 0 || plan.id !== 'free') {
-            setSelectedPlan(null);
-            setPendingPlan({
-                ...plan,
-                studentCount,
-                teacherCount,
-                calculatedPrice: price,
-            });
-            setIsPaymentOpen(true);
-        } else {
-            // Free tier transition update direct
-            onTierChange?.(plan.id);
-            setSelectedPlan(null);
-        }
-    };
-
-    const handleConfirmSeatCheckout = () => {
-        setPendingPlan({
-            ...activeTierConfig,
-            studentCount,
-            teacherCount,
-            calculatedPrice: totalEstimatedPrice,
-        });
+    const handleConfirmCheckout = (quote) => {
+        setPendingQuote(quote);
         setIsPaymentOpen(true);
     };
 
     const sections = [
-        { id: 'plan', label: 'Plan & Add-ons', icon: Zap },
-        { id: 'billing', label: 'Billing', icon: CreditCard },
+        { id: 'plan', label: 'Custom Plan & Usage', icon: Zap },
+        { id: 'billing', label: 'Billing History', icon: CreditCard },
         { id: 'statement', label: 'Statement', icon: FileText },
     ];
 
     return (
-        <div className="space-y-5">
-            {/* Top Bar Header */}
+        <div className="space-y-6">
+            {/* Top Bar Header & Cycle Selector */}
             <div className="flex items-start justify-between flex-wrap gap-3">
                 <div>
                     <h2 className="text-base font-black text-slate-800 dark:text-white flex items-center gap-2">
-                        <Shield size={16} style={{ color: accentColor }} /> Subscriptions & Add-ons
+                        <Shield size={16} className="text-indigo-500" /> Usage-Based Subscription
                     </h2>
-                    <p className="text-[11px] text-slate-400 mt-0.5">Manage base tier, seat capacity & invoicing</p>
+                    <p className="text-[11px] text-slate-400 mt-0.5">Scale student seats, teacher seats, and automated upload capacity</p>
                 </div>
+
+                {/* Billing Cycle Selector */}
                 <div className="flex items-center bg-slate-100 dark:bg-slate-800 rounded-xl p-1">
-                    {['monthly', 'annual'].map(cycle => (
-                        <button key={cycle} onClick={() => setBillingCycle(cycle)}
-                            className={`px-3 py-1.5 rounded-lg text-[10px] font-black transition-all capitalize ${billingCycle === cycle
+                    {[
+                        { id: 'monthly', label: 'Monthly', discount: null },
+                        { id: 'quarterly', label: 'Quarterly', discount: '-5%' },
+                        { id: 'yearly', label: 'Yearly', discount: '-10%' }
+                    ].map(({ id, label, discount }) => (
+                        <button
+                            key={id}
+                            onClick={() => setBillingCycle(id)}
+                            className={`px-3.5 py-1.5 rounded-lg text-[10px] font-black transition-all ${billingCycle === id
                                 ? 'bg-white dark:bg-slate-700 text-slate-800 dark:text-white shadow-sm'
-                                : 'text-slate-400'}`}>
-                            {cycle}
-                            {cycle === 'annual' && <span className="ml-1 text-emerald-500">-20%</span>}
+                                : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
+                                }`}
+                        >
+                            {label}
+                            {discount && <span className="ml-1 text-emerald-500 font-extrabold">{discount}</span>}
                         </button>
                     ))}
                 </div>
             </div>
 
-            {/* Active Plan Banner */}
-            <div className="rounded-2xl p-5 flex items-center justify-between gap-4 flex-wrap"
-                style={{ background: `linear-gradient(135deg, ${accentColor}15, ${accentColor}08)`, border: `1px solid ${accentColor}25` }}>
-                <div className="flex items-center gap-4 min-w-0">
-                    <div className={`w-12 h-12 rounded-2xl flex items-center justify-center bg-gradient-to-br ${activeTierConfig.gradient} flex-shrink-0`}>
-                        {React.createElement(activeTierConfig.icon, { size: 20, className: 'text-white' })}
-                    </div>
-                    <div className="min-w-0">
-                        <p className="text-xs font-black text-slate-500 dark:text-slate-400 uppercase tracking-wider">Current Subscription</p>
-                        <p className="text-base font-black text-slate-800 dark:text-white">{activeTierConfig.label} Plan</p>
-                        <p className="text-[10px] text-slate-400">
-                            R{totalEstimatedPrice.toLocaleString()}/mo ({studentCount} Students, {teacherCount} Teachers)
-                        </p>
-                    </div>
-                </div>
-
-                <div className="flex items-center gap-2">
-                    {activeTierId !== 'platinum' && (
-                        <button
-                            onClick={() => setSelectedPlan(nextTierConfig)}
-                            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-[11px] font-black text-white hover:opacity-90 transition-opacity"
-                            style={{ background: `linear-gradient(135deg, ${accentColor}, ${accentColor}cc)` }}>
-                            <ArrowUpRight size={12} /> Upgrade to {nextTierConfig.label}
-                        </button>
-                    )}
-                </div>
-            </div>
-
-            {/* Seat Add-ons & Capacity Adjustment Controls */}
-            <AddonQuantitySelector
-                studentCount={studentCount}
-                setStudentCount={setStudentCount}
-                teacherCount={teacherCount}
-                setTeacherCount={setTeacherCount}
-                activeTierConfig={activeTierConfig}
-            />
-
-            {/* Price Summary & Instant Update Banner */}
-            <div className="rounded-2xl p-5 bg-gradient-to-r from-slate-900 to-indigo-950 text-white flex items-center justify-between flex-wrap gap-4 shadow-xl">
-                <div>
-                    <p className="text-[10px] text-indigo-200 font-extrabold uppercase tracking-wider">Calculated Billing Total</p>
-                    <p className="text-2xl font-black mt-0.5">
-                        R{totalEstimatedPrice.toLocaleString()} <span className="text-xs text-slate-300 font-normal">/ {billingCycle === 'annual' ? 'year (equivalent)' : 'month'}</span>
-                    </p>
-                    <p className="text-[11px] text-slate-300 mt-0.5">
-                        Includes {activeTierConfig.label} Base + {studentCount} Student Seats + {teacherCount} Teacher Seats
-                    </p>
-                </div>
-                <button
-                    onClick={handleConfirmSeatCheckout}
-                    className="px-5 py-2.5 rounded-xl font-black text-xs text-slate-900 bg-emerald-400 hover:bg-emerald-300 transition-colors shadow-lg shadow-emerald-400/20"
-                >
-                    Update Seats & Checkout
-                </button>
-            </div>
-
-            {/* Countdown timer card for active subscriptions */}
-            {activeTierId !== 'free' && (
-                <CountdownCard
-                    nextBillingDate={nextBillingDate}
-                    tierId={activeTierId}
-                    accentColor={accentColor}
-                    estimatedAmount={totalEstimatedPrice}
+            {/* Input Controls Component (Sliders/Counters with 10 Student / 2 Teacher Baseline) */}
+            {typeof AddonQuantitySelector !== 'undefined' && (
+                <AddonQuantitySelector
+                    studentCount={studentCount}
+                    setStudentCount={setStudentCount}
+                    teacherCount={teacherCount}
+                    setTeacherCount={setTeacherCount}
                 />
             )}
 
-            {/* Nav Tabs */}
-            <div className="flex gap-1 bg-slate-100 dark:bg-slate-800 rounded-xl p-1">
+            {/* Navigation Tabs */}
+            <div className="flex gap-1 bg-slate-100 dark:bg-slate-800 rounded-2xl p-1.5">
                 {sections.map(({ id, label, icon: Icon }) => (
-                    <button key={id} onClick={() => setActiveSection(id)}
-                        className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-[10px] font-black transition-all ${activeSection === id
+                    <button
+                        key={id}
+                        onClick={() => setActiveSection(id)}
+                        className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-black transition-all ${activeSection === id
                             ? 'bg-white dark:bg-slate-700 text-slate-800 dark:text-white shadow-sm'
-                            : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'}`}>
-                        <Icon size={11} />{label}
+                            : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
+                            }`}
+                    >
+                        <Icon size={14} />
+                        <span>{label}</span>
                     </button>
                 ))}
             </div>
 
-            {/* Tab Sections */}
+            {/* Main Section: Dynamic Usage Card */}
             {activeSection === 'plan' && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    {TIERS.map(p => (
-                        <PlanCard
-                            key={p.id}
-                            plan={p}
-                            currentTierId={activeTierId}
-                            onSelect={setSelectedPlan}
-                            billingCycle={billingCycle}
-                            studentCount={studentCount}
-                            teacherCount={teacherCount}
-                        />
-                    ))}
+                <div className="pt-2">
+                    <DynamicUsageCard
+                        studentCount={studentCount}
+                        teacherCount={teacherCount}
+                        billingCycle={billingCycle}
+                        totalEstimatedPrice={totalEstimatedPrice}
+                        onCheckout={handleConfirmCheckout}
+                    />
                 </div>
             )}
 
-            {activeSection === 'billing' && (
-                <BillingHistory records={billingRecords} loading={billingLoading} accentColor={accentColor} />
-            )}
-
-            {activeSection === 'statement' && (
-                <AccountStatement
-                    records={billingRecords}
-                    currentTierId={activeTierId}
-                    schoolName={schoolName}
-                    billingCycle={billingCycle}
+            {/* Countdown Card (Always visible so baseline trial users can see their cycle & free status) */}
+            {typeof CountdownCard !== 'undefined' && (
+                <CountdownCard
+                    nextBillingDate={nextBillingDate}
                     accentColor={accentColor}
-                    totalEstimatedPrice={totalEstimatedPrice}
-                />
-            )}
-
-            {/* Change Plan Modal */}
-            {selectedPlan && (
-                <ChangePlanModal
-                    targetPlan={selectedPlan}
-                    currentTierId={activeTierId}
-                    billingCycle={billingCycle}
+                    estimatedAmount={totalEstimatedPrice}
                     studentCount={studentCount}
                     teacherCount={teacherCount}
-                    onConfirm={handleConfirmChange}
-                    onCancel={() => setSelectedPlan(null)}
+                    monthlyUploadLimit={teacherCount * 4}
+                    billingCycle={billingCycle}
                 />
             )}
 
-            {/* Payment Modal Hand-off */}
-            {isPaymentOpen && (
+            {/* Billing History */}
+            {activeSection === 'billing' && typeof BillingHistory !== 'undefined' && (
+                <BillingHistory schoolId={schoolId} />
+            )}
+
+            {/* Account Statement */}
+            {activeSection === 'statement' && typeof AccountStatement !== 'undefined' && (
+                <AccountStatement
+                    schoolId={schoolId}
+                    schoolName={schoolName}
+                    currentQuote={currentQuote || {
+                        studentCount,
+                        teacherCount,
+                        periodTotal: totalEstimatedPrice,
+                        billingCycle,
+                        monthlyUploadLimit: teacherCount * 4
+                    }}
+                />
+            )}
+
+            {/* Payment Gateway Modal Hand-off */}
+            {isPaymentOpen && typeof PaymentManager !== 'undefined' && (
                 <PaymentManager
                     schoolId={schoolId}
                     schoolName={schoolName}
-                    currentTier={activeTierId}
-                    initialTier={pendingPlan}
-                    studentCount={studentCount}
-                    teacherCount={teacherCount}
-                    onClose={() => { setIsPaymentOpen(false); setPendingPlan(null); }}
-                    onTierChange={(newTier) => {
-                        onTierChange?.(newTier);
+                    quote={pendingQuote}
+                    onClose={() => { setIsPaymentOpen(false); setPendingQuote(null); }}
+                    onSuccess={() => {
                         setIsPaymentOpen(false);
-                        setPendingPlan(null);
+                        onTierChange?.('custom');
                     }}
                 />
             )}
