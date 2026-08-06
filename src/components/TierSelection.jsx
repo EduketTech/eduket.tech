@@ -1,10 +1,19 @@
 import React from 'react';
-import { calculateCustomUsageQuote, UNIT_PRICES, FREE_STUDENT_BASE, FREE_TEACHER_BASE } from '../utils/tierConfig';
+import {
+    calculateCustomUsageQuote,
+    UNIT_PRICES,
+    FREE_STUDENT_BASE,
+    FREE_TEACHER_BASE,
+    DEFAULT_EXAMS_PER_STUDENT,
+    DEFAULT_EXAMS_PER_TEACHER,
+    FREE_TIER_MONTHLY_LIMIT,
+    DISCOUNTS
+} from '../utils/tierConfig';
 import { CheckCircle2, CreditCard, Users, GraduationCap, UploadCloud, Sparkles, ArrowRight } from 'lucide-react';
 
 export default function CustomSubscriptionCard({
-    studentCount = FREE_STUDENT_BASE,
-    teacherCount = FREE_TEACHER_BASE,
+    studentCount = DEFAULT_EXAMS_PER_STUDENT,
+    teacherCount = DEFAULT_EXAMS_PER_TEACHER,
     billingCycle = 'annual',
     onCheckout,
     currentSubscription = {}

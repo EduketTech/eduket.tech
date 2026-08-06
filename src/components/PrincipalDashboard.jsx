@@ -11,7 +11,7 @@ import { useNavigate } from 'react-router-dom';
 import { signOut } from 'firebase/auth';
 import { auth, db } from '../utils/firebase';
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
-import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, setDoc, serverTimestamp, orderBy, collection, query, where, onSnapshot, getDocs } from 'firebase/firestore';
 import { createPortal } from 'react-dom';
 import { useUser } from '../contexts/UserContext';
 import { useActiveTier } from '../utils/firestoreHelpers';
@@ -30,10 +30,15 @@ import { useCurrentSubscription } from '../utils/tierConfig';
 import { useSchool } from '../utils/schoolContext';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { onSnapshot, collection, getDocs, query, where } from 'firebase/firestore';
 import { ActivityFeed } from './ActivityFeed';
 import TeachersTab from './TeachersTab';
 import ExportShareMenu from '../utils/ExportShareMenu';
+import {
+    getSchoolExamLimit,
+    FREE_STUDENT_BASE,
+    FREE_TEACHER_BASE,
+    FREE_TIER_MONTHLY_LIMIT
+} from '../utils/tierConfig';
 
 
 
@@ -70,35 +75,67 @@ const GRADE_ORDER = dynamicGradeOrder;
 
 
 // ─── LIMIT STATUS HOOK ────────────────────────────────────────────────────────
-// Single source of truth for all dynamic limit checks (base + add-on capacity)
+// Single source of truth for all dynamic limit checks (base + add-on capacity
 export function useLimitStatus(seats = {}, examLimit = null, usage = {}) {
     return useMemo(() => {
+        // 1. Align default seat allocations with tierLimits constants
+        const defaultStudents = FREE_STUDENT_BASE || 10;
+        const defaultTeachers = FREE_TEACHER_BASE || 2;
+
+        const resolvedSeats = {
+            students: seats?.students ?? defaultStudents,
+            teachers: seats?.teachers ?? defaultTeachers,
+        };
+
+        // 2. Resolve exam limit: use provided examLimit or compute dynamically from seats
+        const resolvedExamLimit = examLimit ?? getSchoolExamLimit(resolvedSeats) ?? (FREE_TIER_MONTHLY_LIMIT || 5);
+
         const computedLimits = {
-            students: seats?.students ?? 50,
-            teachers: seats?.teachers ?? 5,
-            exams: examLimit,
+            students: resolvedSeats.students,
+            teachers: resolvedSeats.teachers,
+            exams: resolvedExamLimit,
         };
 
         const check = (key) => {
             const max = computedLimits[key] ?? null;
             const used = usage[key] ?? 0;
-            if (max === null) return { used, max: null, pct: 0, status: 'ok', blocked: false, warning: false };
 
-            const pct = Math.min(100, Math.round((used / max) * 100));
+            if (max === null) {
+                return { used, max: null, pct: 0, status: 'ok', blocked: false, warning: false };
+            }
+
+            // Protect against zero division (if seats are explicitly 0)
+            const pct = max > 0 ? Math.min(100, Math.round((used / max) * 100)) : (used > 0 ? 100 : 0);
             const blocked = used >= max;
             const warning = !blocked && pct >= 80;
             const status = blocked ? 'crit' : warning ? 'warn' : 'ok';
+
             return { used, max, pct, status, blocked, warning };
         };
 
         const students = check('students');
         const exams = check('exams');
         const teachers = check('teachers');
+
         const anyBlocked = students.blocked || exams.blocked || teachers.blocked;
         const anyWarning = students.warning || exams.warning || teachers.warning;
 
-        return { students, exams, teachers, anyBlocked, anyWarning, limits: computedLimits };
-    }, [seats?.students, seats?.teachers, examLimit, usage?.students, usage?.exams, usage?.teachers]);
+        return {
+            students,
+            exams,
+            teachers,
+            anyBlocked,
+            anyWarning,
+            limits: computedLimits
+        };
+    }, [
+        seats?.students,
+        seats?.teachers,
+        examLimit,
+        usage?.students,
+        usage?.exams,
+        usage?.teachers
+    ]);
 }
 
 // ─── LIMIT ALERT BANNER ───────────────────────────────────────────────────────
@@ -109,29 +146,49 @@ export function LimitAlertBanner({ resource, label, info, onUpgrade }) {
     if (dismissed && info.status === 'warn') return null;
 
     const isCrit = info.status === 'crit';
+    const isExam = resource === 'exams';
+
+    // Wording helper for exams vs seats
+    const formatMessage = () => {
+        const noun = label ? label.toLowerCase() : (isExam ? 'monthly exam uploads' : 'seats');
+
+        if (isCrit) {
+            return isExam
+                ? `You've reached your monthly upload limit of ${info.max} papers. Add student seats to expand your upload quota.`
+                : `You've reached your limit of ${info.max} ${noun}. Add more seats to continue registering user accounts.`;
+        }
+
+        return isExam
+            ? `${info.used} of ${info.max} monthly exam uploads used (${info.pct}%). Consider expanding your quota.`
+            : `${info.used} of ${info.max} ${noun} allocated (${info.pct}%). Consider expanding your seat quota.`;
+    };
+
+    const buttonLabel = isExam ? 'Expand Quota' : 'Add Seats / Upgrade';
 
     return (
         <div className={`flex items-start gap-3 p-3.5 rounded-2xl border text-xs ${isCrit
-            ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-700 text-slate-800 dark:text-red-200'
-            : 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-700 text-slate-800 dark:text-amber-200'
+                ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-700 text-slate-800 dark:text-red-200'
+                : 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-700 text-slate-800 dark:text-amber-200'
             }`}>
-            {isCrit
-                ? <Lock size={14} className="text-red-500 flex-shrink-0 mt-0.5" />
-                : <AlertTriangle size={14} className="text-amber-500 flex-shrink-0 mt-0.5" />}
+            {isCrit ? (
+                <Lock size={14} className="text-red-500 flex-shrink-0 mt-0.5" />
+            ) : (
+                <AlertTriangle size={14} className="text-amber-500 flex-shrink-0 mt-0.5" />
+            )}
+
             <div className="flex-1 min-w-0">
                 <p className="font-medium">
-                    {isCrit
-                        ? `You've reached your seat limit of ${info.max} ${label.toLowerCase()}. Add more seats to continue.`
-                        : `${info.used} of ${info.max} ${label.toLowerCase()} allocated (${info.pct}%). Consider expanding your seat quota.`}
+                    {formatMessage()}
                 </p>
             </div>
+
             <div className="flex items-center gap-2 flex-shrink-0">
                 <button
                     onClick={onUpgrade}
                     className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-[10px] font-black text-white transition-opacity hover:opacity-90 ${isCrit ? 'bg-red-500' : 'bg-amber-500'
                         }`}
                 >
-                    <ArrowUpRight size={10} /> Add Seats / Upgrade
+                    <ArrowUpRight size={10} /> {buttonLabel}
                 </button>
                 {!isCrit && (
                     <button onClick={() => setDismissed(true)} className="text-amber-400 hover:text-amber-600">
@@ -146,24 +203,40 @@ export function LimitAlertBanner({ resource, label, info, onUpgrade }) {
 // ─── LIMIT GATE ───────────────────────────────────────────────────────────────
 export function LimitGate({ blocked, resource = 'seats', onUpgrade, children }) {
     if (!blocked) return <>{children}</>;
+
+    const isExam = resource === 'exams';
+
+    // Tailored messaging for user seats vs. exam paper limits
+    const title = isExam
+        ? 'Monthly exam upload limit reached'
+        : `${resource.charAt(0).toUpperCase() + resource.slice(1)} seat limit reached`;
+
+    const description = isExam
+        ? 'Increase your purchased student seats or upgrade your subscription plan to boost your monthly upload quota.'
+        : 'Add extra teacher or student seats to your plan to continue registering users.';
+
+    const buttonLabel = isExam ? 'Expand Upload Quota' : 'Manage Seats & Plan';
+
     return (
-        <div className="relative rounded-2xl border-2 border-dashed border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/10 p-6 flex flex-col items-center gap-3 text-center">
-            <div className="w-11 h-11 rounded-2xl bg-red-100 dark:bg-red-900/30 flex items-center justify-center">
+        <div className="relative rounded-2xl border-2 border-dashed border-red-200 dark:border-red-800 bg-red-50/80 dark:bg-red-900/10 p-6 flex flex-col items-center gap-3 text-center transition-all">
+            <div className="w-11 h-11 rounded-2xl bg-red-100 dark:bg-red-900/30 flex items-center justify-center shadow-sm">
                 <Lock size={20} className="text-red-500" />
             </div>
-            <div>
+
+            <div className="max-w-xs">
                 <p className="text-sm font-black text-red-700 dark:text-red-300">
-                    {resource.charAt(0).toUpperCase() + resource.slice(1)} capacity reached
+                    {title}
                 </p>
-                <p className="text-xs text-red-500 dark:text-red-400 mt-1">
-                    Add add-on seats or upgrade your plan to increase limits.
+                <p className="text-xs text-red-500 dark:text-red-400 mt-1 leading-relaxed">
+                    {description}
                 </p>
             </div>
+
             <button
                 onClick={onUpgrade}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-black text-white bg-red-500 hover:bg-red-600 transition-colors shadow-sm"
+                className="mt-1 flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-black text-white bg-red-500 hover:bg-red-600 active:scale-95 transition-all shadow-sm"
             >
-                <ArrowUpRight size={12} /> Manage Seats & Plan
+                <ArrowUpRight size={12} /> {buttonLabel}
             </button>
         </div>
     );
@@ -202,22 +275,32 @@ export function StatCard({ label, value, sub, icon: Icon, color = 'indigo' }) {
     );
 }
 
-export function UsageMeter({ label, used, limit, color = '#4f46e5' }) {
-    if (limit == null) return (
-        <div className="space-y-1">
-            <div className="flex items-center justify-between">
-                <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">{label}</span>
-                <span className="text-[10px] font-black text-emerald-500">∞ Unlimited</span>
+export function UsageMeter({ label, used = 0, limit, color = '#4f46e5' }) {
+    // 1. Handle unlimited resources (limit explicitly set to null/undefined)
+    if (limit == null) {
+        return (
+            <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">{label}</span>
+                    <span className="text-[10px] font-black text-emerald-500">∞ Unlimited</span>
+                </div>
+                <div className="h-1.5 w-full bg-emerald-100 dark:bg-emerald-900/30 rounded-full overflow-hidden">
+                    <div className="h-full w-1/4 rounded-full bg-emerald-300 dark:bg-emerald-600 animate-pulse" />
+                </div>
             </div>
-            <div className="h-1.5 w-full bg-emerald-100 dark:bg-emerald-900/30 rounded-full overflow-hidden">
-                <div className="h-full w-1/4 rounded-full bg-emerald-300 dark:bg-emerald-600 animate-pulse" />
-            </div>
-        </div>
-    );
+        );
+    }
 
-    const pct = Math.min((used / limit) * 100, 100);
-    const isNear = pct >= 80;
-    const isFull = pct >= 100;
+    // 2. Safe percentage calculation (guards against limit === 0)
+    const safeLimit = Math.max(0, limit);
+    const safeUsed = Math.max(0, used);
+
+    const pct = safeLimit > 0
+        ? Math.min(100, Math.round((safeUsed / safeLimit) * 100))
+        : (safeUsed > 0 ? 100 : 0);
+
+    const isNear = pct >= 80 && pct < 100;
+    const isFull = pct >= 100 || (safeLimit === 0 && safeUsed > 0);
     const barColor = isFull ? '#ef4444' : isNear ? '#f59e0b' : color;
 
     return (
@@ -226,9 +309,10 @@ export function UsageMeter({ label, used, limit, color = '#4f46e5' }) {
                 <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">{label}</span>
                 <div className="flex items-center gap-1.5">
                     {isFull && <Lock size={9} className="text-red-500" />}
-                    {isNear && !isFull && <AlertTriangle size={9} className="text-amber-500" />}
-                    <span className={`text-[10px] font-black ${isFull ? 'text-red-500' : isNear ? 'text-amber-500' : 'text-slate-400'}`}>
-                        {used}/{limit}
+                    {isNear && <AlertTriangle size={9} className="text-amber-500" />}
+                    <span className={`text-[10px] font-black ${isFull ? 'text-red-500' : isNear ? 'text-amber-500' : 'text-slate-400'
+                        }`}>
+                        {safeUsed}/{safeLimit}
                     </span>
                 </div>
             </div>
@@ -242,25 +326,34 @@ export function UsageMeter({ label, used, limit, color = '#4f46e5' }) {
     );
 }
 
-export function TierBadge({ isFreeBaseline, collapsed }) {
-    const Icon = isFreeBaseline ? Sparkles : Crown;
-    const label = isFreeBaseline ? 'Free Baseline' : 'Custom Plan';
-    const gradient = isFreeBaseline ? 'from-slate-400 to-slate-500' : 'from-indigo-500 to-indigo-600';
+
+export function TierBadge({ tierId, isFreeBaseline, collapsed }) {
+    // Resolve free baseline state based on tierId or boolean prop
+    const isFree = isFreeBaseline ?? (tierId === 'free' || tierId === 'free_tier');
+
+    const Icon = isFree ? Sparkles : Crown;
+    const label = isFree ? 'Free Baseline' : 'Custom Plan';
+    const gradient = isFree
+        ? 'from-slate-400 to-slate-500 shadow-slate-500/10'
+        : 'from-indigo-500 to-indigo-600 shadow-indigo-500/10';
 
     if (collapsed) {
         return (
-            <div className={`w-8 h-8 rounded-xl flex items-center justify-center bg-gradient-to-br ${gradient} mx-auto`}>
+            <div
+                title={label}
+                className={`w-8 h-8 rounded-xl flex items-center justify-center bg-gradient-to-br ${gradient} shadow-sm mx-auto transition-transform hover:scale-105`}
+            >
                 <Icon size={14} className="text-white" />
             </div>
         );
     }
 
     return (
-        <div className="flex items-center gap-2 px-2 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-700">
-            <div className={`w-5 h-5 rounded-lg flex items-center justify-center bg-gradient-to-br ${gradient} flex-shrink-0`}>
+        <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-700/60 border border-slate-200/50 dark:border-slate-600/50">
+            <div className={`w-5 h-5 rounded-lg flex items-center justify-center bg-gradient-to-br ${gradient} flex-shrink-0 shadow-sm`}>
                 <Icon size={10} className="text-white" />
             </div>
-            <span className="text-[10px] font-black uppercase tracking-wider text-slate-700 dark:text-slate-200">
+            <span className="text-[10px] font-black uppercase tracking-wider text-slate-700 dark:text-slate-200 truncate">
                 {label}
             </span>
         </div>
@@ -296,29 +389,64 @@ export function UpgradeBanner({ isFreeBaseline, onUpgrade, onDismiss }) {
 }
 
 
-export function LockedFeature({ featureName, requiredTier, onUpgrade }) {
-    const vis = TIER_VISUAL[requiredTier] || TIER_VISUAL.free;
+
+const FEATURE_VISUAL = {
+    parentPortal: {
+        label: 'Parent Portal Add-on',
+        gradient: 'from-amber-500 to-rose-500',
+    },
+    custom: {
+        label: 'Custom Plan',
+        gradient: 'from-indigo-500 to-purple-600',
+    },
+    enterprise: {
+        label: 'Enterprise Allocation',
+        gradient: 'from-violet-600 to-indigo-600',
+    },
+    free: {
+        label: 'Standard Plan',
+        gradient: 'from-slate-500 to-slate-700',
+    }
+};
+
+export function LockedFeature({ featureName, requiredTier = 'custom', requiredAddon = null, onUpgrade }) {
+    // Determine key visual config based on add-on or tier requirement
+    const key = requiredAddon || requiredTier;
+    const vis = FEATURE_VISUAL[key] || {
+        label: String(key).toUpperCase(),
+        gradient: 'from-indigo-500 to-purple-600'
+    };
+
+    const isAddon = Boolean(requiredAddon);
+    const unlockText = isAddon ? `Add ${vis.label}` : `Upgrade to ${vis.label}`;
 
     return (
-        <div className="relative bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 p-10 text-center overflow-hidden">
+        <div className="relative bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 p-10 text-center overflow-hidden shadow-xs">
+            {/* Ambient Backdrop Blur */}
             <div className="absolute inset-0 bg-slate-50/70 dark:bg-slate-900/70 backdrop-blur-[2px] rounded-2xl" />
-            <div className="relative z-10 flex flex-col items-center gap-3">
-                <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-slate-700 flex items-center justify-center">
-                    <Lock size={20} className="text-slate-400" />
+
+            <div className="relative z-10 flex flex-col items-center gap-3 max-w-sm mx-auto">
+                <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-slate-700 flex items-center justify-center shadow-xs">
+                    <Lock size={20} className="text-slate-400 dark:text-slate-300" />
                 </div>
-                <p className="text-sm font-black text-slate-700 dark:text-slate-200">{featureName}</p>
-                <p className="text-xs text-slate-400">
-                    Available on the{' '}
+
+                <p className="text-sm font-black text-slate-800 dark:text-slate-100">
+                    {featureName}
+                </p>
+
+                <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                    Available with the{' '}
                     <span className={`font-black bg-gradient-to-r ${vis.gradient} bg-clip-text text-transparent`}>
                         {vis.label}
-                    </span>{' '}
-                    plan and above.
+                    </span>
+                    {isAddon ? ' enabled on your subscription.' : ' and above.'}
                 </p>
+
                 <button
                     onClick={onUpgrade}
-                    className="flex items-center gap-2 px-5 py-2 rounded-xl text-white text-xs font-black bg-gradient-to-r from-violet-600 to-indigo-600 hover:opacity-90 transition-opacity"
+                    className="mt-1 flex items-center gap-2 px-5 py-2.5 rounded-xl text-white text-xs font-black bg-gradient-to-r from-indigo-600 to-violet-600 hover:opacity-95 active:scale-95 transition-all shadow-md shadow-indigo-500/20"
                 >
-                    <Zap size={12} /> Unlock {vis.label}
+                    <Zap size={13} /> {unlockText}
                 </button>
             </div>
         </div>
@@ -477,7 +605,9 @@ export default function PrincipalDashboard({ principal }) {
     const { seats, examLimit, isFreeBaseline, loading: subLoading } = useCurrentSubscription(schoolId);
     const limits = useLimitStatus(seats, examLimit, usage);
 
-
+    // -------------------------------------------------------------
+    // 1. DYNAMIC SUBSCRIPTION LISTENER (Handles all live collections safely)
+    // -------------------------------------------------------------
     useEffect(() => {
         if (!schoolId) return;
 
@@ -486,6 +616,7 @@ export default function PrincipalDashboard({ principal }) {
         const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
             if (!state.active) return;
 
+            // If user logs out or session is initializing, reset states
             if (!user) {
                 setAttempts([]);
                 setTeachers([]);
@@ -495,13 +626,15 @@ export default function PrincipalDashboard({ principal }) {
                 return;
             }
 
+            // Clean up existing subscriptions before setting new ones
+            state.unsubs.forEach(u => typeof u === 'function' && u());
+
             const attemptsQuery = query(
                 collection(db, 'exam_attempts'),
                 where('schoolId', '==', schoolId)
             );
 
             state.unsubs = [
-                // Live, so a submitted exam updates every stat immediately.
                 onSnapshot(
                     attemptsQuery,
                     (snap) => {
@@ -513,7 +646,7 @@ export default function PrincipalDashboard({ principal }) {
                 subscribeToSchoolTeachers(schoolId, setTeachers),
                 subscribeToSchoolStudents(schoolId, setStudents),
                 subscribeToSchoolExams(schoolId, setExams),
-                subscribeToAuditLog(schoolId, setAuditLog),
+                subscribeToAuditLog(schoolId, setAuditLog), // Single source of truth for Audit Log
             ];
         });
 
@@ -524,18 +657,26 @@ export default function PrincipalDashboard({ principal }) {
         };
     }, [schoolId]);
 
-    // TEACHER REVIEWS BY PRINCIPAL
+    // -------------------------------------------------------------
+    // 2. TEACHER REVIEWS LISTENER (Guarded with Auth Check)
+    // -------------------------------------------------------------
     useEffect(() => {
-        if (!school?.id) return;
+        if (!school?.id || !auth.currentUser) return;
+
         const q = query(collection(db, 'teacherReviews'), where('schoolId', '==', school.id));
-        const unsub = onSnapshot(q, snap => {
-            const map = {};
-            snap.forEach(d => {
-                const r = d.data();
-                map[`${r.teacherId}::${r.subject}`] = { rating: r.rating, notes: r.notes };
-            });
-            setTeacherReviews(map);
-        }, err => console.error('teacherReviews listener:', err));
+        const unsub = onSnapshot(
+            q,
+            snap => {
+                const map = {};
+                snap.forEach(d => {
+                    const r = d.data();
+                    map[`${r.teacherId}::${r.subject}`] = { rating: r.rating, notes: r.notes };
+                });
+                setTeacherReviews(map);
+            },
+            err => console.error('teacherReviews listener:', err)
+        );
+
         return () => unsub();
     }, [school?.id]);
 
@@ -576,29 +717,28 @@ export default function PrincipalDashboard({ principal }) {
         return () => unsub();
     }, []);
 
+    // -------------------------------------------------------------
+    // 3. FETCH SCHOOL DETAILS (Guarded against null/unauthenticated user)
+    // -------------------------------------------------------------
     useEffect(() => {
         const fetchSchool = async () => {
-            // console.log('fetchSchool: user is', user);
-            if (!user) return;
+            if (!user || !auth.currentUser) return;
 
             try {
                 const userDoc = await getDoc(doc(db, 'users', user.uid));
-                // console.log('fetchSchool: userDoc exists?', userDoc.exists(), userDoc.data());
                 const schoolId = userDoc.data()?.schoolId;
-                // console.log('fetchSchool: schoolId is', schoolId);
 
                 if (schoolId) {
                     const schoolDoc = await getDoc(doc(db, 'schools', schoolId));
-                    // console.log('fetchSchool: schoolDoc exists?', schoolDoc.exists());
                     if (schoolDoc.exists()) {
                         setSelectedSchoolDoc({ id: schoolId, ...schoolDoc.data() });
-                        // console.log('fetchSchool: selectedSchoolDoc set');
                     }
                 }
             } catch (error) {
                 console.error('fetchSchool error:', error);
             }
         };
+
         fetchSchool();
     }, [user]);
 

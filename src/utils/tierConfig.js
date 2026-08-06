@@ -1,6 +1,28 @@
-import { onSnapshot, doc } from "firebase/firestore";
-import { db } from "./firebase";
+import { onSnapshot, doc, getDoc } from "firebase/firestore";
+import { db, auth } from "./firebase";
 import { useState, useEffect, useMemo } from "react";
+
+export async function loadSchoolSubscription(schoolId) {
+    // 1. Ensure user is authenticated and schoolId exists before making request
+    if (!auth.currentUser || !schoolId) {
+        return null;
+    }
+
+    try {
+        const schoolRef = doc(db, "schools", schoolId);
+        const docSnap = await getDoc(schoolRef);
+
+        if (docSnap.exists()) {
+            const data = docSnap.data();
+            // Return embedded subscription or fallback
+            return data.subscription || { tier: data.tier || 'free' };
+        }
+        return null;
+    } catch (error) {
+        console.error("Error loading school subscription:", error);
+        return null;
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BASELINE & PRICING CONSTANTS (ZAR)
@@ -20,7 +42,7 @@ export const UNIT_PRICES = {
     studentPerMonth: PRICING_RATES.studentMonthly,
     teacherPerMonth: PRICING_RATES.teacherMonthly,
     basePlatformPerMonth: PRICING_RATES.basePlatformMonthly,
-    uploadsPerTeacher: 2,
+    uploadsPerTeacher: 4,
 };
 
 export const DISCOUNTS = {
@@ -37,7 +59,7 @@ export const CYCLE_MONTHS = {
 
 // Seat quota constants
 export const DEFAULT_EXAMS_PER_STUDENT = 2;   // Monthly exam uploads per student seat
-export const DEFAULT_EXAMS_PER_TEACHER = 2;   // Monthly exam uploads per teacher seat
+export const DEFAULT_EXAMS_PER_TEACHER = 4;   // Monthly exam uploads per teacher seat
 export const FREE_TIER_MONTHLY_LIMIT = 4;    // Free trial baseline monthly exam quota
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -103,28 +125,73 @@ export function calculateSubscriptionQuote({
 /**
  * Custom Usage Quote Wrapper for UI cards & checkout flows
  */
+
+
+// src/utils/tierConfig.js
+
+export const TAX_RATE = 0.15; // 15% VAT
+export const PLATFORM_MAINTENANCE_FEE = 350; // Minimum Platform Access Fee (R150)
+
 export function calculateCustomUsageQuote(studentCount = 0, teacherCount = 0, billingCycle = 'monthly') {
-    const quote = calculateSubscriptionQuote({
-        students: studentCount,
-        teachers: teacherCount,
-        cycle: billingCycle,
-    });
+    const cycleMonthsMap = { monthly: 1, quarterly: 3, yearly: 12 };
+    const months = cycleMonthsMap[billingCycle] || 1;
+
+    // 1. Calculate paid seat counts above baseline
+    const paidStudents = Math.max(0, studentCount - (FREE_STUDENT_BASE || 0));
+    const paidTeachers = Math.max(0, teacherCount - (FREE_TEACHER_BASE || 0));
+
+    // Free baseline flag: true if no additional paid seats were requested
+    const isFreeBaseline = paidStudents <= 0 && paidTeachers <= 0;
+
+    // 2. Base monthly seat costs (1-month single seat rate)
+    const studentMonthlyCost = paidStudents * (UNIT_PRICES?.studentPerMonth || 0);
+    const teacherMonthlyCost = paidTeachers * (UNIT_PRICES?.teacherPerMonth || 0);
+    const rawSeatMonthly = teacherMonthlyCost + studentMonthlyCost;
+
+    // 3. Platform Maintenance Fee floor logic:
+    // If seat usage is less than R150/mo on a custom tier, charge the R150 floor.
+    const platformMonthlyFee = isFreeBaseline
+        ? 0
+        : Math.max(rawSeatMonthly, PLATFORM_MAINTENANCE_FEE);
+
+    const isMaintenanceFeeApplied = !isFreeBaseline && rawSeatMonthly < PLATFORM_MAINTENANCE_FEE;
+
+    // 4. Multiply monthly base fee across cycle duration (Quarterly = x3, Yearly = x12)
+    const grossCycleSubtotal = platformMonthlyFee * months;
+
+    // 5. Apply Cycle Discount (e.g. 10% for Quarterly, 20% for Yearly)
+    const discountFraction = DISCOUNTS[billingCycle] || 0;
+    const discountAmount = grossCycleSubtotal * discountFraction;
+    const subtotalAfterDiscount = grossCycleSubtotal - discountAmount;
+
+    // 6. Tax & Period Totals
+    const taxAmount = isFreeBaseline ? 0 : subtotalAfterDiscount * TAX_RATE;
+    const periodTotal = subtotalAfterDiscount + taxAmount;
 
     const monthlyUploadLimit = Math.max(
-        (studentCount * DEFAULT_EXAMS_PER_STUDENT) + (teacherCount * DEFAULT_EXAMS_PER_TEACHER),
-        FREE_TIER_MONTHLY_LIMIT
+        (teacherCount * (DEFAULT_EXAMS_PER_TEACHER || 50)),
+        (FREE_TIER_MONTHLY_LIMIT || 100)
     );
 
     return {
         studentCount,
         teacherCount,
         billingCycle,
-        isFreeBaseline: quote.isFreeBaseline,
-        monthlyEquivalent: quote.monthlyEquivalent,
-        periodTotal: quote.periodTotal,
-        totalCost: quote.totalDueNow,
-        discountPercent: Math.round((DISCOUNTS[billingCycle] || 0) * 100),
+        isFreeBaseline,
+        rawSeatMonthly: Math.round(rawSeatMonthly),
+        platformMonthlyFee: Math.round(platformMonthlyFee),
+        grossCycleSubtotal: Math.round(grossCycleSubtotal),
+        discountPercent: Math.round(discountFraction * 100),
+        discountAmount: Math.round(discountAmount),
+        subtotalAfterDiscount: Math.round(subtotalAfterDiscount),
+        taxRatePercent: Math.round(TAX_RATE * 100),
+        taxAmount: Math.round(taxAmount),
+        periodTotal: Math.round(periodTotal),
+        totalCost: Math.round(periodTotal),
+        monthlyEquivalent: Math.round(periodTotal / months),
         monthlyUploadLimit,
+        isMaintenanceFeeApplied,
+        platformMaintenanceFeeAmount: PLATFORM_MAINTENANCE_FEE,
     };
 }
 

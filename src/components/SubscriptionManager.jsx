@@ -12,10 +12,18 @@ import {
 } from 'firebase/firestore';
 import { db } from '../utils/firebase';
 import {
-    FREE_STUDENT_BASE, FREE_TEACHER_BASE
+    FREE_STUDENT_BASE,
+    FREE_TEACHER_BASE,
+    DEFAULT_EXAMS_PER_STUDENT,
+    DEFAULT_EXAMS_PER_TEACHER,
+    FREE_TIER_MONTHLY_LIMIT,
+    DISCOUNTS,
+    UNIT_PRICES,
+    calculateSubscriptionQuote,
+    calculateProratedUserAddon,
+    calculateCustomUsageQuote
 } from '../utils/tierConfig';
 import PaymentManager from './PaymentManager';
-
 
 
 /**
@@ -256,18 +264,47 @@ export function CountdownCard({
     monthlyUploadLimit = 0,
     billingCycle = 'monthly'
 }) {
-    const t = useCountdown(nextBillingDate);
+    // 1. Calculate dynamic renewal date based on selected billingCycle duration
+    const targetBillingDate = useMemo(() => {
+        // Fallback to current date if nextBillingDate is undefined/null
+        const baseDate = nextBillingDate
+            ? new Date(nextBillingDate?.toDate ? nextBillingDate.toDate() : nextBillingDate)
+            : new Date();
 
-    // 1. Determine if current counts fall strictly within the trial baseline
-    const isFreeBaseline = studentCount <= FREE_STUDENT_BASE && teacherCount <= FREE_TEACHER_BASE;
+        // If nextBillingDate is provided from existing active sub, project from today for dynamic preview
+        const projectedDate = new Date();
 
-    // 2. Force payable amount to 0 if within baseline limits
+        switch (billingCycle) {
+            case 'quarterly':
+                projectedDate.setMonth(projectedDate.getMonth() + 3);
+                break;
+            case 'yearly':
+                projectedDate.setFullYear(projectedDate.getFullYear() + 1);
+                break;
+            case 'monthly':
+            default:
+                projectedDate.setMonth(projectedDate.getMonth() + 1);
+                break;
+        }
+
+        return projectedDate;
+    }, [nextBillingDate, billingCycle]);
+
+    // 2. Pass dynamic target date to countdown hook
+    const t = useCountdown(targetBillingDate);
+
+    // 3. Determine if current counts fall strictly within baseline limits
+    const isFreeBaseline = studentCount <= (FREE_STUDENT_BASE || 0) && teacherCount <= (FREE_TEACHER_BASE || 0);
+
+    // 4. Force payable amount to 0 if within baseline limits
     const displayAmount = isFreeBaseline ? 0 : estimatedAmount;
 
-    const formattedDate = nextBillingDate
-        ? new Date(nextBillingDate?.toDate ? nextBillingDate.toDate() : nextBillingDate)
-            .toLocaleDateString('en-ZA', { day: 'numeric', month: 'long', year: 'numeric' })
-        : '—';
+    // 5. Format display date string
+    const formattedDate = targetBillingDate.toLocaleDateString('en-ZA', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric'
+    });
 
     return (
         <div
@@ -288,8 +325,8 @@ export function CountdownCard({
                 <div>
                     <div className="flex items-center gap-2 mb-1">
                         <CalendarClock size={15} style={{ color: accentColor }} />
-                        <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                            Next Subscription Renewal
+                        <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-600">
+                            Next Subscription Renewal ({billingCycle})
                         </span>
                     </div>
 
@@ -299,7 +336,7 @@ export function CountdownCard({
 
                     {/* Active Seat Allocation Subtitle */}
                     <div className="flex items-center gap-2 mt-1 flex-wrap">
-                        <p className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                        <p className="text-[11px] font-semibold text-slate-600 dark:text-slate-600">
                             {studentCount} Students • {teacherCount} Teachers
                         </p>
 
@@ -316,7 +353,7 @@ export function CountdownCard({
                     {isFreeBaseline ? (
                         <div className="flex flex-col items-end">
                             <span className="inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-wider text-emerald-700 dark:text-emerald-300 bg-emerald-100 dark:bg-emerald-900/60 px-2.5 py-1 rounded-full border border-emerald-300 dark:border-emerald-700">
-                                <Sparkles size={12} /> Free Trial Active
+                                <Sparkles size={12} /> Free Baseline Active
                             </span>
                             <span className="text-[10px] font-extrabold text-slate-400 mt-1">
                                 R0.00 / {billingCycle}
@@ -683,12 +720,21 @@ export function DynamicUsageCard({ studentCount, teacherCount, billingCycle, onC
         yearly: 'year (12 months)'
     };
 
-    const isFreeBaseline = quote.isFreeBaseline;
-    const displayMonthlyEquivalent = isFreeBaseline ? 0 : quote.monthlyEquivalent;
-    const displayPeriodTotal = isFreeBaseline ? 0 : quote.periodTotal;
+    const cycleMonthsMap = {
+        monthly: 1,
+        quarterly: 3,
+        yearly: 12
+    };
 
-    const paidStudents = Math.max(0, studentCount - FREE_STUDENT_BASE);
-    const paidTeachers = Math.max(0, teacherCount - FREE_TEACHER_BASE);
+    const isFreeBaseline = quote.isFreeBaseline;
+    const months = cycleMonthsMap[billingCycle] || 1;
+
+    // --- 1. DECLARE ALL BREAKDOWN VARIABLES ---
+    const paidStudents = Math.max(0, studentCount - (FREE_STUDENT_BASE || 0));
+    const paidTeachers = Math.max(0, teacherCount - (FREE_TEACHER_BASE || 0));
+
+    const studentMonthlyCost = paidStudents * (UNIT_PRICES?.studentPerMonth || 0);
+    const teacherMonthlyCost = paidTeachers * (UNIT_PRICES?.teacherPerMonth || 0);
 
     const handleProceedToCheckout = () => {
         onCheckout({
@@ -696,9 +742,6 @@ export function DynamicUsageCard({ studentCount, teacherCount, billingCycle, onC
             studentCount,
             teacherCount,
             billingCycle,
-            periodTotal: displayPeriodTotal,
-            monthlyEquivalent: displayMonthlyEquivalent,
-            isFreeBaseline,
             action: isFreeBaseline ? 'ACTIVATE_FREE' : 'INITIATE_CHECKOUT'
         });
     };
@@ -738,23 +781,23 @@ export function DynamicUsageCard({ studentCount, teacherCount, billingCycle, onC
             <div className="mb-6 p-5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800">
                 <div className="flex items-baseline gap-2">
                     <span className="text-3xl sm:text-4xl font-black text-slate-900 dark:text-white">
-                        R{displayMonthlyEquivalent.toLocaleString()}
+                        R{quote.monthlyEquivalent.toLocaleString()}
                     </span>
-                    <span className="text-xs font-bold text-slate-400">/month</span>
+                    <span className="text-xs font-bold text-slate-400">/effective month (incl. VAT)</span>
                 </div>
                 <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-1">
                     {isFreeBaseline
                         ? '100% Free baseline allocation. Add seats anytime as your school grows.'
                         : billingCycle === 'monthly'
                             ? 'Billed monthly. Adjust or cancel anytime.'
-                            : `Billed as R${displayPeriodTotal.toLocaleString()} per ${cycleLabelMap[billingCycle]}`}
+                            : `Billed as R${quote.periodTotal.toLocaleString()} per ${cycleLabelMap[billingCycle]}`}
                 </p>
             </div>
 
-            {/* Breakdown List */}
-            <div className="space-y-3.5 mb-8">
+            {/* Top Overview Cards */}
+            <div className="space-y-3.5 mb-6">
                 <h4 className="text-xs font-black uppercase tracking-wider text-slate-400">
-                    Included Allocation Breakdown
+                    Included Allocation & Line Items
                 </h4>
 
                 {/* Teachers Line */}
@@ -766,7 +809,7 @@ export function DynamicUsageCard({ studentCount, teacherCount, billingCycle, onC
                     <span className="text-xs font-black text-slate-900 dark:text-white">
                         {paidTeachers === 0
                             ? 'Free (Baseline)'
-                            : `R${(paidTeachers * UNIT_PRICES.teacherPerMonth).toLocaleString()}/mo`}
+                            : `R${teacherMonthlyCost.toLocaleString()}/mo`}
                     </span>
                 </div>
 
@@ -779,7 +822,7 @@ export function DynamicUsageCard({ studentCount, teacherCount, billingCycle, onC
                     <span className="text-xs font-black text-slate-900 dark:text-white">
                         {paidStudents === 0
                             ? 'Free (Baseline)'
-                            : `R${(paidStudents * UNIT_PRICES.studentPerMonth).toLocaleString()}/mo`}
+                            : `R${studentMonthlyCost.toLocaleString()}/mo`}
                     </span>
                 </div>
 
@@ -794,6 +837,85 @@ export function DynamicUsageCard({ studentCount, teacherCount, billingCycle, onC
                     </span>
                 </div>
             </div>
+
+            {/* Total Billing Summary Reconciliation */}
+            {!isFreeBaseline && (
+                <div className="mb-8 p-4 rounded-2xl bg-indigo-50/50 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-900/50 text-xs space-y-2.5">
+                    <h5 className="font-black text-[11px] uppercase tracking-wider text-indigo-900 dark:text-indigo-200 border-b border-indigo-100 dark:border-indigo-900/40 pb-1.5">
+                        Complete Cost Breakdown
+                    </h5>
+
+                    {/* 1. Teacher Seats Subtotal */}
+                    <div className="flex justify-between text-slate-600 dark:text-slate-400">
+                        <span>
+                            Teacher Accounts ({teacherCount} total
+                            {paidTeachers > 0 ? `, ${paidTeachers} paid × R${UNIT_PRICES?.teacherPerMonth || 50}` : ' - Baseline Included'})
+                        </span>
+                        <span className="font-bold text-slate-800 dark:text-slate-200">
+                            R{teacherMonthlyCost.toLocaleString()}/mo
+                        </span>
+                    </div>
+
+                    {/* 2. Student Seats Subtotal */}
+                    <div className="flex justify-between text-slate-600 dark:text-slate-400">
+                        <span>
+                            Student Seats ({studentCount} total
+                            {paidStudents > 0 ? `, ${paidStudents} paid × R${UNIT_PRICES?.studentPerMonth || 5}` : ' - Baseline Included'})
+                        </span>
+                        <span className="font-bold text-slate-800 dark:text-slate-200">
+                            R{studentMonthlyCost.toLocaleString()}/mo
+                        </span>
+                    </div>
+
+
+                    {/* 4. Platform Maintenance & Access Fee */}
+                    <div className="flex justify-between items-center text-indigo-900 dark:text-indigo-200 font-medium">
+                        <span>Platform Maintenance & Access Fee:</span>
+                        <span className="font-bold">
+                            {quote.isMaintenanceFeeApplied
+                                ? `R${(quote.platformMaintenanceFeeAmount || 150).toLocaleString()}`
+                                : `R${(quote.platformMaintenanceFeeAmount || 150).toLocaleString()}`}
+                        </span>
+                    </div>
+
+
+                    {/* 6. Multi-Month Duration Subtotal */}
+                    {months > 1 && (
+                        <div className="flex justify-between text-slate-600 dark:text-slate-400">
+                            <span>Billing Duration Subtotal ({months} months):</span>
+                            <span className="font-bold text-slate-800 dark:text-slate-200">
+                                R{quote.grossCycleSubtotal.toLocaleString()}
+                            </span>
+                        </div>
+                    )}
+
+                    {/* 7. Cycle Discount */}
+                    {quote.discountPercent > 0 && (
+                        <div className="flex justify-between text-emerald-600 dark:text-emerald-400 font-medium">
+                            <span>{quote.discountPercent}% Savings Discount:</span>
+                            <span>-R{quote.discountAmount.toLocaleString()}</span>
+                        </div>
+                    )}
+
+
+
+                    {/* 9. VAT / Tax Line */}
+                    <div className="flex justify-between text-slate-600 dark:text-slate-400">
+                        <span>VAT / Tax ({quote.taxRatePercent}%):</span>
+                        <span className="font-bold text-slate-800 dark:text-slate-200">
+                            R{quote.taxAmount.toLocaleString()}
+                        </span>
+                    </div>
+
+                    {/* 10. Final Total Billed */}
+                    <div className="pt-2.5 border-t border-indigo-200 dark:border-indigo-800 flex justify-between font-black text-slate-900 dark:text-white text-sm">
+                        <span>Total Billed Now ({cycleLabelMap[billingCycle]}):</span>
+                        <span className="text-indigo-600 dark:text-indigo-400 text-base">
+                            R{quote.periodTotal.toLocaleString()}
+                        </span>
+                    </div>
+                </div>
+            )}
 
             {/* Policy Notice */}
             <div className="space-y-2 mb-8 text-[11px] text-slate-500 dark:text-slate-400">
@@ -821,7 +943,7 @@ export function DynamicUsageCard({ studentCount, teacherCount, billingCycle, onC
                 ) : (
                     <>
                         <CreditCard size={16} />
-                        Proceed to Checkout
+                        Proceed to Checkout (R{quote.periodTotal.toLocaleString()})
                         <ArrowRight size={14} className="ml-1" />
                     </>
                 )}
@@ -829,7 +951,6 @@ export function DynamicUsageCard({ studentCount, teacherCount, billingCycle, onC
         </div>
     );
 }
-
 
 // ─── ACCOUNT STATEMENT ────────────────────────────────────────────────────────
 export function AccountStatement({
