@@ -10,6 +10,9 @@ import { auth } from '../utils/firebase';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
+/**
+ * Attaches the current user's Firebase Bearer ID Token to headers.
+ */
 async function getAuthHeaders() {
     const user = auth.currentUser;
     if (!user) {
@@ -22,6 +25,9 @@ async function getAuthHeaders() {
     };
 }
 
+/**
+ * Standard HTTP response handler for backend API calls.
+ */
 async function handleResponse(res) {
     if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -35,66 +41,72 @@ async function handleResponse(res) {
     return data;
 }
 
-// Shared display formatter - lets Intl handle currency-correct symbols and
-// decimal places (R1,399 vs $226.64 vs ¥503,832 with no decimals) instead
-// of hand-rolling it in every component that shows a price.
-export function formatCurrency(amount, currencyCode) {
+/**
+ * Shared display formatter - lets Intl handle currency-correct symbols and
+ * decimal places (e.g., R1,399.00 vs $226.64) instead of hand-rolling it in components.
+ */
+export function formatCurrency(amount = 0, currencyCode = 'ZAR') {
+    const numericAmount = Number(amount) || 0;
     try {
         return new Intl.NumberFormat(undefined, {
             style: 'currency',
-            currency: currencyCode || 'ZAR',
+            currency: currencyCode,
             maximumFractionDigits: currencyCode === 'JPY' || currencyCode === 'KRW' ? 0 : 2,
-        }).format(amount);
+        }).format(numericAmount);
     } catch {
-        // Intl throws on a currency code it doesn't recognize - fall back
-        // to a plain number rather than crashing whatever's rendering it.
-        return `${currencyCode} ${amount.toLocaleString()}`;
+        // Intl throws on an unrecognized currency code - fall back to plain string
+        return `${currencyCode} ${numericAmount.toFixed(2)}`;
     }
 }
 
-// Quote for a specific seat count + cycle - used right before showing the
-// payment step. Matches billing_routes.py's /api/billing/quote contract:
-// POST { students, teachers, billingCycle, additionalExamPacks } →
-// { students, teachers, billingCycle, months, discountPercent,
-//   additionalExamPacks, addonExamPacksCost, monthlyEquivalent,
-//   subtotalBeforeDiscount, discountAmount, totalDueZar }
+/**
+ * Quote for a specific seat count + cycle - used before proceeding to payment.
+ * Matches billing_routes.py's /api/billing/quote contract:
+ * POST { students, teachers, billingCycle, additionalExamPacks } →
+ * {
+ *   cycle, months, is_free_baseline, total_seats, paid_seats,
+ *   raw_seat_monthly, platform_maintenance_fee_cycle, is_maintenance_fee_applied,
+ *   gross_subtotal_before_discount, discount_percent, discount_amount,
+ *   subtotal_after_discount, addon_exam_packs_cost, tax_rate_percent,
+ *   tax_amount, total_due_now, monthly_equivalent, monthly_upload_limit
+ * }
+ */
 export async function fetchPriceQuote({ students, teachers, billingCycle, additionalExamPacks = 0 }) {
     const headers = await getAuthHeaders();
     const res = await fetch(`${API_BASE}/api/billing/quote`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ students, teachers, billingCycle, additionalExamPacks }),
+        body: JSON.stringify({
+            students: Number(students),
+            teachers: Number(teachers),
+            billingCycle,
+            additionalExamPacks: Number(additionalExamPacks),
+        }),
     });
     return handleResponse(res);
 }
 
-// Quotes for ALL tiers at once, for the signed-in user's own school - used
-// on the tier-selection screen so it doesn't need 5 separate round trips.
-// NOTE: billing_routes.py does not currently implement this endpoint —
-// confirm /api/billing/quotes exists server-side before relying on this,
-// or call fetchPriceQuote once per tier from the client in the meantime.
-export async function fetchAllTierQuotes({ billingCycle }) {
-    const headers = await getAuthHeaders();
-    const params = new URLSearchParams({ billingCycle });
-    const res = await fetch(`${API_BASE}/api/billing/quotes?${params}`, { headers });
-    return handleResponse(res);
-}
-
-// Call this ONLY when the user clicks "Pay" - it creates the authoritative
-// pending transaction record server-side (so the ITN handler has something
-// real to verify against) and returns the exact fields to put in the
-// hidden PayFast form. Don't construct that form data yourself, and don't
-// send `amount` - the backend recalculates it from these seat/cycle inputs
-// so a tampered client can never influence what gets charged.
-// Matches billing_routes.py's /api/billing/initiate contract:
-// POST { students, teachers, billingCycle, additionalExamPacks } →
-// { paymentId, paymentData, quote }
+/**
+ * Call this ONLY when the user clicks "Pay" - it creates the authoritative
+ * pending transaction record server-side (so the ITN handler has something
+ * real to verify against) and returns the exact fields to put in the
+ * hidden PayFast form. Don't construct form data client-side or send `amount`.
+ *
+ * Matches billing_routes.py's /api/billing/initiate contract:
+ * POST { students, teachers, billingCycle, additionalExamPacks } →
+ * { paymentId, paymentData, quote }
+ */
 export async function initiatePayment({ students, teachers, billingCycle, additionalExamPacks = 0 }) {
     const headers = await getAuthHeaders();
     const res = await fetch(`${API_BASE}/api/billing/initiate`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ students, teachers, billingCycle, additionalExamPacks }),
+        body: JSON.stringify({
+            students: Number(students),
+            teachers: Number(teachers),
+            billingCycle,
+            additionalExamPacks: Number(additionalExamPacks),
+        }),
     });
     return handleResponse(res);
 }
