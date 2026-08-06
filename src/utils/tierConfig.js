@@ -126,11 +126,8 @@ export function calculateSubscriptionQuote({
  * Custom Usage Quote Wrapper for UI cards & checkout flows
  */
 
-
-// src/utils/tierConfig.js
-
 export const TAX_RATE = 0.15; // 15% VAT
-export const PLATFORM_MAINTENANCE_FEE = 350; // Minimum Platform Access Fee (R150)
+export const PLATFORM_MAINTENANCE_FEE = 350; // Base Monthly Platform Maintenance Fee (R350/mo)
 
 export function calculateCustomUsageQuote(studentCount = 0, teacherCount = 0, billingCycle = 'monthly') {
     const cycleMonthsMap = { monthly: 1, quarterly: 3, yearly: 12 };
@@ -148,16 +145,20 @@ export function calculateCustomUsageQuote(studentCount = 0, teacherCount = 0, bi
     const teacherMonthlyCost = paidTeachers * (UNIT_PRICES?.teacherPerMonth || 0);
     const rawSeatMonthly = teacherMonthlyCost + studentMonthlyCost;
 
-    // 3. Platform Maintenance Fee floor logic:
-    // If seat usage is less than R150/mo on a custom tier, charge the R150 floor.
+    // 3. Dynamic Platform Maintenance Fee based on billing cycle (Monthly x1, Quarterly x3, Yearly x12)
+    const maintenanceFeeForCycle = isFreeBaseline ? 0 : (PLATFORM_MAINTENANCE_FEE * months);
+    const rawSeatCycle = rawSeatMonthly * months;
+
+    // 4. Gross Cycle Subtotal before discounts (Applies cycle floor)
+    const grossCycleSubtotal = isFreeBaseline
+        ? 0
+        : Math.max(rawSeatCycle, maintenanceFeeForCycle);
+
     const platformMonthlyFee = isFreeBaseline
         ? 0
-        : Math.max(rawSeatMonthly, PLATFORM_MAINTENANCE_FEE);
+        : grossCycleSubtotal / months;
 
-    const isMaintenanceFeeApplied = !isFreeBaseline && rawSeatMonthly < PLATFORM_MAINTENANCE_FEE;
-
-    // 4. Multiply monthly base fee across cycle duration (Quarterly = x3, Yearly = x12)
-    const grossCycleSubtotal = platformMonthlyFee * months;
+    const isMaintenanceFeeApplied = !isFreeBaseline && rawSeatCycle < maintenanceFeeForCycle;
 
     // 5. Apply Cycle Discount (e.g. 10% for Quarterly, 20% for Yearly)
     const discountFraction = DISCOUNTS[billingCycle] || 0;
@@ -177,9 +178,11 @@ export function calculateCustomUsageQuote(studentCount = 0, teacherCount = 0, bi
         studentCount,
         teacherCount,
         billingCycle,
+        months,
         isFreeBaseline,
         rawSeatMonthly: Math.round(rawSeatMonthly),
         platformMonthlyFee: Math.round(platformMonthlyFee),
+        platformMaintenanceFeeAmount: Math.round(maintenanceFeeForCycle), // Dynamically scaled (e.g. R350, R1050, or R4200)
         grossCycleSubtotal: Math.round(grossCycleSubtotal),
         discountPercent: Math.round(discountFraction * 100),
         discountAmount: Math.round(discountAmount),
@@ -191,7 +194,6 @@ export function calculateCustomUsageQuote(studentCount = 0, teacherCount = 0, bi
         monthlyEquivalent: Math.round(periodTotal / months),
         monthlyUploadLimit,
         isMaintenanceFeeApplied,
-        platformMaintenanceFeeAmount: PLATFORM_MAINTENANCE_FEE,
     };
 }
 
