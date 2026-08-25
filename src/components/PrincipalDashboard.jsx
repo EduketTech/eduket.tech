@@ -16,12 +16,13 @@ import { createPortal } from 'react-dom';
 import { useUser } from '../contexts/UserContext';
 import { useActiveTier } from '../utils/firestoreHelpers';
 
+
 import {
     Users, BookOpen, FileText, TrendingUp, Award, AlertTriangle,
     ChevronDown, ChevronRight, Filter, Download, Printer, LogOut,
-    Search, X, Eye, BarChart2, CheckCircle2, Clock, RefreshCw,
+    Search, X, Eye, BarChart2, CheckCircle2, Clock,
     School, Settings, Moon, Sun, Menu, Zap, Lock, ArrowUpRight,
-    Sparkles, Crown, Star, CreditCard, ChevronLeft, Shield, GraduationCap
+    Sparkles, Crown, Star, CreditCard, ChevronLeft, Shield, GraduationCap, RefreshCw, UserCheck, UserX, HeartHandshake, Phone, Mail,
 } from 'lucide-react';
 import PaymentManager from './PaymentManager';
 import SubscriptionManager from './SubscriptionManager';
@@ -40,38 +41,6 @@ import {
     FREE_TIER_MONTHLY_LIMIT
 } from '../utils/tierConfig';
 
-
-
-
-
-// ─── GRADE ORDER ──────────────────────────────────────────────────────────────
-// 1. Defensively find the school object under any typical naming pattern
-const activeSchoolInstance =
-    typeof school !== 'undefined' ? school :
-        typeof schoolData !== 'undefined' ? schoolData :
-            typeof currentSchool !== 'undefined' ? currentSchool : null;
-
-// 2. Safely resolve the active curriculum string name
-const currentCurriculum =
-    typeof schoolCurricula !== 'undefined' && schoolCurricula?.[0] ? schoolCurricula[0] :
-        activeSchoolInstance?.curriculum ? activeSchoolInstance.curriculum : 'Dynamic';
-
-// 3. Locate the student grade tallies defensively without reading undeclared parents
-const activeGradeCounts =
-    typeof gradeCounts !== 'undefined' ? gradeCounts :
-        typeof stats !== 'undefined' && stats?.gradeCounts ? stats.gradeCounts :
-            typeof metrics !== 'undefined' && metrics?.gradeCounts ? metrics.gradeCounts :
-                activeSchoolInstance?.gradeCounts ? activeSchoolInstance.gradeCounts : {};
-
-// 4. Extract the active grade text keys and sort them naturally
-const dynamicGradeOrder = Object.keys(activeGradeCounts).sort((a, b) => {
-    const numA = parseInt(a.replace(/\D/g, ''), 10) || 0;
-    const numB = parseInt(b.replace(/\D/g, ''), 10) || 0;
-    return numA - numB;
-});
-
-// Alias the old variable name to the new dynamic order so legacy components don't crash
-const GRADE_ORDER = dynamicGradeOrder;
 
 
 // ─── LIMIT STATUS HOOK ────────────────────────────────────────────────────────
@@ -166,14 +135,14 @@ export function LimitAlertBanner({ resource, label, info, onUpgrade }) {
     const buttonLabel = isExam ? 'Expand Quota' : 'Add Seats / Upgrade';
 
     return (
-        <div className={`flex items-start gap-3 p-3.5 rounded-2xl border text-xs ${isCrit
-                ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-700 text-slate-800 dark:text-red-200'
-                : 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-700 text-slate-800 dark:text-amber-200'
+        <div className={`flex items-start gap-3 p-3.5 rounded-2xl border text-xs text-red-600 ${isCrit
+            ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-700'
+            : 'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-700'
             }`}>
             {isCrit ? (
-                <Lock size={14} className="text-red-500 flex-shrink-0 mt-0.5" />
+                <Lock size={14} className="text-red-500 dark:text-red-500 flex-shrink-0 mt-0.5" />
             ) : (
-                <AlertTriangle size={14} className="text-amber-500 flex-shrink-0 mt-0.5" />
+                <AlertTriangle size={14} className="text-amber-500 dark:text-amber-500 flex-shrink-0 mt-0.5" />
             )}
 
             <div className="flex-1 min-w-0">
@@ -182,10 +151,10 @@ export function LimitAlertBanner({ resource, label, info, onUpgrade }) {
                 </p>
             </div>
 
-            <div className="flex items-center gap-2 flex-shrink-0">
+            <div className="flex items-center gap-2 flex-shrink-0 text-black dark:text-white">
                 <button
                     onClick={onUpgrade}
-                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-[10px] font-black text-white transition-opacity hover:opacity-90 ${isCrit ? 'bg-red-500' : 'bg-amber-500'
+                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-[10px] font-black text-black dark:text-white transition-opacity hover:opacity-90 ${isCrit ? 'bg-red-500' : 'bg-amber-500'
                         }`}
                 >
                     <ArrowUpRight size={10} /> {buttonLabel}
@@ -234,7 +203,7 @@ export function LimitGate({ blocked, resource = 'seats', onUpgrade, children }) 
 
             <button
                 onClick={onUpgrade}
-                className="mt-1 flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-black text-white bg-red-500 hover:bg-red-600 active:scale-95 transition-all shadow-sm"
+                className="mt-1 flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-black text-black bg-red-500 hover:bg-red-600 active:scale-95 transition-all shadow-sm"
             >
                 <ArrowUpRight size={12} /> {buttonLabel}
             </button>
@@ -275,51 +244,71 @@ export function StatCard({ label, value, sub, icon: Icon, color = 'indigo' }) {
     );
 }
 
-export function UsageMeter({ label, used = 0, limit, color = '#4f46e5' }) {
-    // 1. Handle unlimited resources (limit explicitly set to null/undefined)
-    if (limit == null) {
-        return (
-            <div className="space-y-1">
-                <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">{label}</span>
-                    <span className="text-[10px] font-black text-emerald-500">∞ Unlimited</span>
-                </div>
-                <div className="h-1.5 w-full bg-emerald-100 dark:bg-emerald-900/30 rounded-full overflow-hidden">
-                    <div className="h-full w-1/4 rounded-full bg-emerald-300 dark:bg-emerald-600 animate-pulse" />
-                </div>
-            </div>
+
+export function UsageMeter({ label, used = 0, limit = 10, color = '#4f46e5' }) {
+    // 1. Ensure clean numerical inputs (no unlimited / null fallbacks)
+    const safeLimit = Math.max(1, Number(limit) || 10);
+    const safeUsed = Math.max(0, Number(used) || 0);
+
+    // 2. Compute percentage values
+    const rawPercentage = (safeUsed / safeLimit) * 100;
+    const clampedPercentage = Math.min(100, rawPercentage);
+
+    // 3. Status flags based on quota consumption
+    const isNearLimit = rawPercentage >= 80 && rawPercentage < 100;
+    const isAtOrExceeded = rawPercentage >= 100;
+
+    // 4. Dynamic bar color & text styling based on usage severity
+    let barStyle = { backgroundColor: color };
+    let textStyleClass = 'text-slate-600 dark:text-slate-300 font-medium';
+    let statusBadge = null;
+
+    if (isAtOrExceeded) {
+        barStyle = { backgroundColor: '#ef4444' }; // Red-500
+        textStyleClass = 'text-red-600 dark:text-red-400 font-bold';
+        statusBadge = (
+            <span className="text-[10px] uppercase font-bold tracking-wider bg-red-100 dark:bg-red-950/60 text-red-600 dark:text-red-300 px-1.5 py-0.5 rounded ml-1.5">
+                {safeUsed > safeLimit ? 'Exceeded' : 'Full'}
+            </span>
         );
+    } else if (isNearLimit) {
+        barStyle = { backgroundColor: '#f59e0b' }; // Amber-500
+        textStyleClass = 'text-amber-600 dark:text-amber-400 font-semibold';
     }
 
-    // 2. Safe percentage calculation (guards against limit === 0)
-    const safeLimit = Math.max(0, limit);
-    const safeUsed = Math.max(0, used);
-
-    const pct = safeLimit > 0
-        ? Math.min(100, Math.round((safeUsed / safeLimit) * 100))
-        : (safeUsed > 0 ? 100 : 0);
-
-    const isNear = pct >= 80 && pct < 100;
-    const isFull = pct >= 100 || (safeLimit === 0 && safeUsed > 0);
-    const barColor = isFull ? '#ef4444' : isNear ? '#f59e0b' : color;
-
     return (
-        <div className="space-y-1">
-            <div className="flex items-center justify-between">
-                <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400">{label}</span>
-                <div className="flex items-center gap-1.5">
-                    {isFull && <Lock size={9} className="text-red-500" />}
-                    {isNear && <AlertTriangle size={9} className="text-amber-500" />}
-                    <span className={`text-[10px] font-black ${isFull ? 'text-red-500' : isNear ? 'text-amber-500' : 'text-slate-400'
-                        }`}>
-                        {safeUsed}/{safeLimit}
+        <div className="space-y-1.5">
+            <div className="flex items-center justify-between text-xs">
+                <span className="font-semibold text-slate-700 dark:text-slate-200">
+                    {label}
+                </span>
+
+                <div className="flex items-center">
+                    <span className={`tabular-nums ${textStyleClass}`}>
+                        {safeUsed.toLocaleString()} / {safeLimit.toLocaleString()}
                     </span>
+                    <span className="text-[10px] text-slate-400 dark:text-slate-500 ml-1">
+                        ({Math.round(rawPercentage)}%)
+                    </span>
+                    {statusBadge}
                 </div>
             </div>
-            <div className="h-1.5 w-full bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
+
+            {/* Progress Bar Container */}
+            <div
+                className="h-2 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden relative"
+                role="progressbar"
+                aria-valuenow={safeUsed}
+                aria-valuemin={0}
+                aria-valuemax={safeLimit}
+                aria-label={label}
+            >
                 <div
-                    className="h-full rounded-full transition-all duration-700"
-                    style={{ width: `${pct}%`, backgroundColor: barColor }}
+                    className="h-full rounded-full transition-all duration-500 ease-out"
+                    style={{
+                        width: `${clampedPercentage}%`,
+                        ...barStyle,
+                    }}
                 />
             </div>
         </div>
@@ -374,7 +363,7 @@ export function UpgradeBanner({ isFreeBaseline, onUpgrade, onDismiss }) {
                 <Zap size={16} className="text-white" />
             </div>
             <div className="flex-1 min-w-0">
-                <p className="text-[11px] font-black text-white leading-snug">{message}</p>
+                <p className="text-[11px] font-black text-black leading-snug">{message}</p>
             </div>
             <button onClick={onUpgrade} className="flex-shrink-0 flex items-center gap-1 bg-white text-indigo-700 text-[10px] font-black px-3 py-2 rounded-xl hover:bg-indigo-50 transition-colors">
                 Manage Seats <ArrowUpRight size={11} />
@@ -484,7 +473,8 @@ export default function PrincipalDashboard({ principal }) {
     const [students, setStudents] = useState([]);
     const [exams, setExams] = useState([]);
     const [attempts, setAttempts] = useState([]);
-    const [auditLog, setAuditLog] = useState([]);
+    const [users, setUsers] = useState([]);
+    const [schoolActivity, setSchoolActivity] = useState([]);
     const [selectedSchoolDoc, setSelectedSchoolDoc] = useState(null);
     const [teacherReviews, setTeacherReviews] = useState({});
     const [authToken, setAuthToken] = useState(null);
@@ -511,6 +501,18 @@ export default function PrincipalDashboard({ principal }) {
     // Drill-down
     const [selectedStudent, setSelectedStudent] = useState(null);
     const [selectedExam, setSelectedExam] = useState(null);
+    const [auditLog, setAuditLog] = useState([]);
+    const currentCurriculum = principal?.curriculum || 'CAPS';
+
+    // ─── COMPLETE RESOLUTION BLOCK ───────────────────────────────────────────────
+
+    // Example derived array based on your active state or defaults
+    const dynamicGradeOrder = useMemo(() => {
+        // Return your grade hierarchy array, e.g., ['8', '9', '10', '11', '12']
+        return currentCurriculum === 'CAPS'
+            ? ['Grade 8', 'Grade 9', 'Grade 10', 'Grade 11', 'Grade 12']
+            : ['Grade 10', 'Grade 11', 'Grade 12'];
+    }, [currentCurriculum]);
 
     // ─── 3. SCHOOL ID — needs selectedSchoolDoc + school ───────────────────
     const schoolId = useMemo(() => {
@@ -537,17 +539,36 @@ export default function PrincipalDashboard({ principal }) {
 
     // ── Derived ───────────────────────────────────────────────────────────────
 
-    const schoolAttempts = attempts;   // already scoped by the query
+    const schoolAttempts = attempts; // already scoped by the query
+    const activeGradeCounts = useMemo(() => {
+        return students.reduce((acc, student) => {
+            const rawGrade = student.grade || student.gradeLevel || 'Grade 12';
+            const gradeKey = typeof rawGrade === 'number'
+                ? `Grade ${rawGrade}`
+                : (String(rawGrade).toLowerCase().startsWith('grade') ? String(rawGrade) : `Grade ${rawGrade}`);
 
-    const avgScore = useMemo(() => averageScore(schoolAttempts), [schoolAttempts]);
-    const overallPassRate = useMemo(() => passRate(schoolAttempts), [schoolAttempts]);
-    const subjectGroups = useMemo(() => groupBySubject(schoolAttempts), [schoolAttempts]);
-    const gradeCounts = useMemo(() => countByGrade(students), [students]);
+            acc[gradeKey] = (acc[gradeKey] || 0) + 1;
+            return acc;
+        }, {});
+    }, [students]);
+
+    const avgScore = useMemo(() => (typeof averageScore === 'function' ? averageScore(schoolAttempts) : null), [schoolAttempts]);
+    const overallPassRate = useMemo(() => (typeof passRate === 'function' ? passRate(schoolAttempts) : 0), [schoolAttempts]);
+    const subjectGroups = useMemo(() => (typeof groupBySubject === 'function' ? groupBySubject(schoolAttempts) : {}), [schoolAttempts]);
 
     const allSubjects = useMemo(
         () => [...new Set(students.flatMap(s => s.subjects || []))].sort(),
         [students]
     );
+
+
+    const GRADE_ORDER = useMemo(() => {
+        return Object.keys(activeGradeCounts).sort((a, b) => {
+            const numA = parseInt(a.replace(/\D/g, ''), 10) || 0;
+            const numB = parseInt(b.replace(/\D/g, ''), 10) || 0;
+            return numA - numB;
+        });
+    }, [activeGradeCounts]);
 
     // Index attempts by student once, instead of scanning the full array per row.
     const attemptsByStudent = useMemo(() => {
@@ -570,10 +591,9 @@ export default function PrincipalDashboard({ principal }) {
     const examAttempts = useCallback((exam) => {
         const examObj = typeof exam === 'string' ? { id: exam } : exam;
         const id = examObj?.id;
-        const customId = examObj?.examId;   // the field set during upload
+        const customId = examObj?.examId;
 
         return schoolAttempts.filter(a => {
-            // Never match undefined === undefined — always require a real value
             if (!a.examId && !a.sourceUploadId && !a.exam_id) return false;
 
             return (
@@ -588,11 +608,10 @@ export default function PrincipalDashboard({ principal }) {
         const matchGrade = filterGrade === 'All' || s.grade === filterGrade;
         const matchSubject = filterSubject === 'All' || (s.subjects || []).includes(filterSubject);
         const matchSearch = !search ||
-            `${s.name} ${s.surname}`.toLowerCase().includes(search.toLowerCase()) ||
+            `${s.name || ''} ${s.surname || ''}`.toLowerCase().includes(search.toLowerCase()) ||
             s.email?.toLowerCase().includes(search.toLowerCase());
         return matchGrade && matchSubject && matchSearch;
     }), [students, filterGrade, filterSubject, search]);
-
 
     // ─── 4. USAGE — needs the data arrays ─────────────────────────────────
     const usage = useMemo(() => ({
@@ -606,31 +625,41 @@ export default function PrincipalDashboard({ principal }) {
     const limits = useLimitStatus(seats, examLimit, usage);
 
     // -------------------------------------------------------------
-    // 1. DYNAMIC SUBSCRIPTION LISTENER (Handles all live collections safely)
+    // 1. DYNAMIC SUBSCRIPTION LISTENER
     // -------------------------------------------------------------
     useEffect(() => {
         if (!schoolId) return;
 
         const state = { unsubs: [], active: true };
 
-        const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+        const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
             if (!state.active) return;
 
-            // If user logs out or session is initializing, reset states
-            if (!user) {
+            if (!currentUser) {
                 setAttempts([]);
                 setTeachers([]);
                 setStudents([]);
                 setExams([]);
                 setAuditLog([]);
+                setUsers([]);
+                setSchoolActivity([]);
                 return;
             }
 
-            // Clean up existing subscriptions before setting new ones
             state.unsubs.forEach(u => typeof u === 'function' && u());
 
             const attemptsQuery = query(
                 collection(db, 'exam_attempts'),
+                where('schoolId', '==', schoolId)
+            );
+
+            const usersQuery = query(
+                collection(db, 'users'),
+                where('schoolId', '==', schoolId)
+            );
+
+            const activityQuery = query(
+                collection(db, 'school_activity'),
                 where('schoolId', '==', schoolId)
             );
 
@@ -643,11 +672,27 @@ export default function PrincipalDashboard({ principal }) {
                     },
                     (err) => console.error('[attempts listener]', err)
                 ),
-                subscribeToSchoolTeachers(schoolId, setTeachers),
-                subscribeToSchoolStudents(schoolId, setStudents),
-                subscribeToSchoolExams(schoolId, setExams),
-                subscribeToAuditLog(schoolId, setAuditLog), // Single source of truth for Audit Log
-            ];
+                onSnapshot(
+                    usersQuery,
+                    (snap) => {
+                        if (!state.active) return;
+                        setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+                    },
+                    (err) => console.error('[users listener]', err)
+                ),
+                onSnapshot(
+                    activityQuery,
+                    (snap) => {
+                        if (!state.active) return;
+                        setSchoolActivity(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+                    },
+                    (err) => console.error('[activity listener]', err)
+                ),
+                typeof subscribeToSchoolTeachers === 'function' && subscribeToSchoolTeachers(schoolId, setTeachers),
+                typeof subscribeToSchoolStudents === 'function' && subscribeToSchoolStudents(schoolId, setStudents),
+                typeof subscribeToSchoolExams === 'function' && subscribeToSchoolExams(schoolId, setExams),
+                typeof subscribeToAuditLog === 'function' && subscribeToAuditLog(schoolId, setAuditLog),
+            ].filter(Boolean);
         });
 
         return () => {
@@ -821,6 +866,22 @@ export default function PrincipalDashboard({ principal }) {
     ];
 
     const mobileBottomTabs = tabs.slice(0, 5);
+
+    // FETCH PARENTS
+
+    useEffect(() => {
+        if (!schoolId) return;
+        return onSnapshot(
+            query(
+                collection(db, 'users'),
+                where('schoolId', '==', schoolId),
+                where('role', '==', 'parent')
+            ),
+            snap => setUsers(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
+            err => console.error('[pending parents]', err)
+        );
+    }, [schoolId]);
+
 
     // ── SIDEBAR CONTENT ───────────────────────────────────────────────────────
     const SidebarContent = ({ onNavClick }) => (
@@ -1106,53 +1167,50 @@ export default function PrincipalDashboard({ principal }) {
                                 {gradeOpen && (
                                     <div className="px-5 pb-5 border-t border-slate-100 dark:border-slate-700">
                                         {dynamicGradeOrder.length === 0 ? (
-                                            <div className="h-28 flex items-center justify-center
-                                border border-dashed border-slate-200
-                                dark:border-slate-700 rounded-xl mt-4">
+                                            <div className="h-28 flex items-center justify-center border border-dashed border-slate-200 dark:border-slate-700 rounded-xl mt-4">
                                                 <p className="text-xs font-medium text-slate-400">
                                                     No student enrollment records found
                                                 </p>
                                             </div>
                                         ) : (
-                                            /* Scrollable bar chart — handles many grades gracefully */
                                             <div className="overflow-x-auto mt-4">
                                                 <div
                                                     className="flex items-end gap-2 h-28 pt-4"
                                                     style={{
-                                                        minWidth: `${dynamicGradeOrder.length * 48}px`
+                                                        minWidth: `${Math.max(dynamicGradeOrder.length * 48, 280)}px`
                                                     }}
                                                 >
                                                     {dynamicGradeOrder.map(g => {
-                                                        const count = activeGradeCounts[g] || 0;
+                                                        const count = Number(activeGradeCounts[g]) || 0;
                                                         const max = Math.max(
-                                                            ...dynamicGradeOrder.map(gr => activeGradeCounts[gr] || 0),
+                                                            ...dynamicGradeOrder.map(gr => Number(activeGradeCounts[gr]) || 0),
                                                             1
                                                         );
-                                                        const pct = (count / max) * 100;
+                                                        const pct = Math.min((count / max) * 100, 100);
                                                         const displayLabel = g
-                                                            .replace('Grade ', 'Gr ')
-                                                            .replace('Year ', 'Yr ')
-                                                            .replace('Form ', 'Fm ');
+                                                            .replace(/^Grade\s*/i, 'Gr ')
+                                                            .replace(/^Year\s*/i, 'Yr ')
+                                                            .replace(/^Form\s*/i, 'Fm ');
 
                                                         return (
-                                                            <div key={g}
-                                                                className="flex flex-col items-center gap-1"
-                                                                style={{ minWidth: 40 }}>
-                                                                <span className="text-[10px] font-black
-                                                     text-slate-600 dark:text-slate-300">
+                                                            <div
+                                                                key={g}
+                                                                className="flex flex-col items-center gap-1 flex-1"
+                                                                style={{ minWidth: 40 }}
+                                                            >
+                                                                <span className="text-[10px] font-black text-slate-600 dark:text-slate-300">
                                                                     {count}
                                                                 </span>
-                                                                <div
-                                                                    className="w-full rounded-t-xl transition-all duration-700"
-                                                                    style={{
-                                                                        height: `${pct}%`,
-                                                                        backgroundColor: primary || '#4f46e5',
-                                                                        minHeight: count ? 6 : 0,
-                                                                        width: 32,
-                                                                    }}
-                                                                />
-                                                                <span className="text-[9px] text-slate-400
-                                                     font-bold whitespace-nowrap">
+                                                                <div className="w-full bg-slate-100 dark:bg-slate-700/50 rounded-t-xl h-20 flex items-end overflow-hidden p-0.5">
+                                                                    <div
+                                                                        className="w-full rounded-t-lg transition-all duration-700"
+                                                                        style={{
+                                                                            height: `${Math.max(pct, count > 0 ? 8 : 0)}%`,
+                                                                            backgroundColor: primary || '#4f46e5',
+                                                                        }}
+                                                                    />
+                                                                </div>
+                                                                <span className="text-[9px] text-slate-400 font-bold whitespace-nowrap">
                                                                     {displayLabel}
                                                                 </span>
                                                             </div>
@@ -1247,86 +1305,6 @@ export default function PrincipalDashboard({ principal }) {
                                 )}
                             </div>
 
-                            <div className="bg-white dark:bg-slate-800 rounded-2xl border
-                border-slate-100 dark:border-slate-700 overflow-hidden">
-
-                                {/* Header — clickable to collapse */}
-                                <button
-                                    onClick={() => setActivityOpen(v => !v)}
-                                    className="w-full flex justify-between items-center p-5
-                   hover:bg-slate-50 dark:hover:bg-slate-700/50
-                   transition-colors cursor-pointer"
-                                >
-                                    <h2 className="text-sm font-black text-slate-700 dark:text-white">
-                                        Recent Activity
-                                    </h2>
-                                    <div className="flex items-center gap-2">
-                                        {auditLog.length > 0 && (
-                                            <span className="text-[10px] font-bold px-2.5 py-1 rounded-full
-                                 bg-slate-100 dark:bg-slate-700
-                                 text-slate-500 dark:text-slate-300">
-                                                {auditLog.length} events
-                                            </span>
-                                        )}
-                                        <svg
-                                            className={`w-4 h-4 text-slate-400 transition-transform duration-200
-                            ${activityOpen ? '' : 'rotate-180'}`}
-                                            fill="none" viewBox="0 0 24 24" stroke="currentColor"
-                                        >
-                                            <path strokeLinecap="round" strokeLinejoin="round"
-                                                strokeWidth={2} d="M5 15l7-7 7 7" />
-                                        </svg>
-                                    </div>
-                                </button>
-
-                                {/* Collapsible + scrollable content */}
-                                {activityOpen && (
-                                    <div className="border-t border-slate-100 dark:border-slate-700">
-                                        {auditLog.length === 0 ? (
-                                            <div className="px-5 py-6 flex items-center justify-center
-                                border border-dashed border-slate-200
-                                dark:border-slate-700 rounded-xl mx-5 my-4">
-                                                <p className="text-xs text-slate-400">
-                                                    No activity recorded yet.
-                                                </p>
-                                            </div>
-                                        ) : (
-                                            /* Scrollable — grows with audit log */
-                                            <div className="overflow-y-auto max-h-64 px-5 py-4 space-y-3">
-                                                {auditLog.map(ev => (
-                                                    <div key={ev.id} className="flex items-start gap-3 text-xs">
-                                                        <div className="w-5 h-5 rounded-full bg-slate-100
-                                            dark:bg-slate-700 flex items-center
-                                            justify-center flex-shrink-0 mt-0.5">
-                                                            {ev.type === 'ai_mark'
-                                                                ? <Award size={10} className="text-indigo-500" />
-                                                                : ev.type === 'remark'
-                                                                    ? <RefreshCw size={10} className="text-amber-500" />
-                                                                    : <CheckCircle2 size={10} className="text-emerald-500" />
-                                                            }
-                                                        </div>
-                                                        <div className="flex-1 min-w-0">
-                                                            <p className="font-bold text-slate-700 dark:text-slate-200 truncate">
-                                                                {ev.description || ev.type}
-                                                            </p>
-                                                            <p className="text-slate-400 mt-0.5">
-                                                                {ev.actorName || 'System'} &middot;{' '}
-                                                                {ev.timestamp?.toDate?.().toLocaleDateString(
-                                                                    'en-ZA', {
-                                                                    day: '2-digit',
-                                                                    month: 'short',
-                                                                    year: 'numeric',
-                                                                }
-                                                                ) || '—'}
-                                                            </p>
-                                                        </div>
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        )}
-                                    </div>
-                                )}
-                            </div>
                         </>
                     )}
 
@@ -1642,20 +1620,23 @@ export default function PrincipalDashboard({ principal }) {
 
                     {/* ── AUDIT LOG TAB ── */}
                     {activeTab === 'audit' && (
-
-                        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 overflow-hidden">
-                            <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between">
-                                <h2 className="text-sm font-black text-slate-700 dark:text-white">Audit Log</h2>
-                                <span className="text-xs text-slate-400">{auditLog.length} entries</span>
-                            </div>
-                            {auditLog.length === 0
-                                ? <div className="p-10 text-center"><Clock className="w-8 h-8 text-slate-300 mx-auto mb-2" /><p className="text-xs text-slate-400">No audit events yet.</p></div>
-                                : (
+                        isFeatureAllowed(activeTier, 'auditLog') ? (
+                            <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 overflow-hidden">
+                                <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between">
+                                    <h2 className="text-sm font-black text-slate-700 dark:text-white">Audit Log</h2>
+                                    <span className="text-xs text-slate-400">{auditLog.length} entries</span>
+                                </div>
+                                {auditLog.length === 0 ? (
+                                    <div className="p-10 text-center">
+                                        <Clock className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                                        <p className="text-xs text-slate-400">No audit events yet.</p>
+                                    </div>
+                                ) : (
                                     <div className="overflow-x-auto">
                                         <table className="w-full text-xs min-w-[560px]">
                                             <thead>
                                                 <tr className="border-b border-slate-100 dark:border-slate-700">
-                                                    {['Type', 'Description', 'Actor', 'Student', 'Exam', 'Timestamp'].map(h => (
+                                                    {['Action', 'Target', 'Actor', 'Timestamp'].map(h => (
                                                         <th key={h} className="text-left px-4 py-3 font-black text-slate-400 uppercase text-[9px]">{h}</th>
                                                     ))}
                                                 </tr>
@@ -1664,22 +1645,25 @@ export default function PrincipalDashboard({ principal }) {
                                                 {auditLog.map(ev => (
                                                     <tr key={ev.id} className="border-b border-slate-50 dark:border-slate-700/50">
                                                         <td className="px-4 py-3">
-                                                            <span className={`text-[9px] font-black px-2 py-0.5 rounded-lg ${ev.type === 'ai_mark' ? 'bg-indigo-50 text-indigo-600' : ev.type === 'remark' ? 'bg-amber-50 text-amber-600' : ev.type === 'modification' ? 'bg-rose-50 text-rose-600' : 'bg-slate-100 text-slate-500'}`}>
-                                                                {ev.type || 'event'}
+                                                            <span className="text-[9px] font-black px-2 py-0.5 rounded-lg bg-slate-100 text-slate-500">
+                                                                {ev.action || 'event'}
                                                             </span>
                                                         </td>
-                                                        <td className="px-4 py-3 font-medium text-slate-700 dark:text-slate-200 max-w-[160px] truncate">{ev.description || '—'}</td>
-                                                        <td className="px-4 py-3 text-slate-500">{ev.actorName || 'System'}</td>
-                                                        <td className="px-4 py-3 text-slate-500">{ev.studentName || '—'}</td>
-                                                        <td className="px-4 py-3 text-slate-500">{ev.examTitle || '—'}</td>
-                                                        <td className="px-4 py-3 text-slate-400">{ev.timestamp?.toDate?.().toLocaleString('en-ZA') || '—'}</td>
+                                                        <td className="px-4 py-3 font-medium text-slate-700 dark:text-slate-200 max-w-[200px] truncate">
+                                                            {ev.details?.title || ev.target || '—'}
+                                                        </td>
+                                                        <td className="px-4 py-3 text-slate-500">{ev.actorUid || 'System'}</td>
+                                                        <td className="px-4 py-3 text-slate-400">
+                                                            {ev.timestamp?.toDate?.().toLocaleString('en-ZA') || '—'}
+                                                        </td>
                                                     </tr>
                                                 ))}
                                             </tbody>
                                         </table>
                                     </div>
                                 )}
-                        </div>
+                            </div>
+                        ) : <LockedFeature featureName="Audit Log" requiredTier="starter" onUpgrade={handleUpgrade} />
                     )}
 
                     {/* ── SUBSCRIPTIONS TAB ── */}

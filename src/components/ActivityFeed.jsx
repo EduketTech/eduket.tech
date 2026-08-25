@@ -1,60 +1,267 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import {
     collection, query, where, orderBy, limit,
-    onSnapshot, updateDoc, addDoc, doc,
-    serverTimestamp,
+    onSnapshot, updateDoc, addDoc, doc, setDoc, getDocs,
+    serverTimestamp, getDoc, writeBatch
 } from 'firebase/firestore';
-import { db } from '../utils/firebase';
+import { db, auth } from '../utils/firebase';
 import {
     Bell, AlertTriangle, CheckCircle, XCircle,
-    Clock, ChevronUp, RefreshCw,
-    ChevronDown, Users, BookOpen, GraduationCap,
+    ChevronUp, ChevronDown, Key, UserCheck, Shield, CheckCircle2, Search
 } from 'lucide-react';
+
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 function timeAgo(ts) {
     if (!ts) return '';
-    const diff  = Date.now() - new Date(ts).getTime();
-    const mins  = Math.floor(diff / 60000);
+    const diff = Date.now() - new Date(ts).getTime();
+    const mins = Math.floor(diff / 60000);
     const hours = Math.floor(diff / 3600000);
-    const days  = Math.floor(diff / 86400000);
-    if (mins  < 1)  return 'just now';
-    if (mins  < 60) return `${mins}m ago`;
+    const days = Math.floor(diff / 86400000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins}m ago`;
     if (hours < 24) return `${hours}h ago`;
     return `${days}d ago`;
 }
 
 const ROLE_STYLES = {
-    teacher:   { bg: 'bg-emerald-100 dark:bg-emerald-900/30', text: 'text-emerald-700 dark:text-emerald-400', dot: 'bg-emerald-500', icon: '👩‍🏫' },
-    student:   { bg: 'bg-blue-100 dark:bg-blue-900/30',       text: 'text-blue-700 dark:text-blue-400',       dot: 'bg-blue-500',    icon: '🎓'  },
-    principal: { bg: 'bg-purple-100 dark:bg-purple-900/30',   text: 'text-purple-700 dark:text-purple-400',   dot: 'bg-purple-500',  icon: '🏫'  },
-    default:   { bg: 'bg-slate-100 dark:bg-slate-800',         text: 'text-slate-600 dark:text-slate-400',     dot: 'bg-slate-400',   icon: '👤'  },
+    teacher: { bg: 'bg-emerald-100 dark:bg-emerald-900/30', text: 'text-emerald-700 dark:text-emerald-400', dot: 'bg-emerald-500', icon: '👩‍🏫' },
+    student: { bg: 'bg-blue-100 dark:bg-blue-900/30', text: 'text-blue-700 dark:text-blue-400', dot: 'bg-blue-500', icon: '🎓' },
+    parent: { bg: 'bg-amber-100 dark:bg-amber-900/30', text: 'text-amber-700 dark:text-amber-400', dot: 'bg-amber-500', icon: '👨‍👩‍👧' },
+    principal: { bg: 'bg-purple-100 dark:bg-purple-900/30', text: 'text-purple-700 dark:text-purple-400', dot: 'bg-purple-500', icon: '🏫' },
+    default: { bg: 'bg-slate-100 dark:bg-slate-800', text: 'text-slate-600 dark:text-slate-400', dot: 'bg-slate-400', icon: '👤' },
 };
+
+// ── ParentLinkPicker ──────────────────────────────────────────────────────
+export function ParentLinkPicker({ event, schoolId, linkedStudentUid, onLink }) {
+    const [searchText, setSearchText] = useState(event?.childName || '');
+    const [results, setResults] = useState([]);
+    const [searching, setSearching] = useState(false);
+
+    // Auto-verification state
+    const [verifying, setVerifying] = useState(true);
+    const [matchStatus, setMatchStatus] = useState({
+        status: 'checking', // 'exact_match' | 'mismatch' | 'not_found' | 'checking'
+        matchedStudent: null,
+        message: ''
+    });
+
+    const parentCode = event?.studentCode || event?.children?.[0]?.studentCode || '';
+    const parentChildName = event?.childName || event?.children?.[0]?.childName || '';
+    const parentChildGrade = event?.childGrade || event?.children?.[0]?.childGrade || '';
+
+    // Auto-verify entered code against Firestore on mount
+    useEffect(() => {
+        let isMounted = true;
+
+        const verifyStudentCode = async () => {
+            if (!parentCode) {
+                if (isMounted) {
+                    setMatchStatus({
+                        status: 'not_found',
+                        matchedStudent: null,
+                        message: 'No student security code was provided by the parent.'
+                    });
+                    setVerifying(false);
+                }
+                return;
+            }
+
+            setVerifying(true);
+            try {
+                const q = query(
+                    collection(db, 'students'),
+                    where('studentCode', '==', parentCode.trim().toUpperCase())
+                );
+                const snap = await getDocs(q);
+
+                if (!snap.empty) {
+                    const studentDoc = snap.docs[0];
+                    const studentData = { uid: studentDoc.id, ...studentDoc.data() };
+                    const dbName = studentData.displayName || `${studentData.firstName || ''} ${studentData.lastName || ''}`.trim();
+
+                    // Compare names and grade
+                    const namesMatch = dbName.toLowerCase().includes(parentChildName.toLowerCase()) ||
+                        parentChildName.toLowerCase().includes(dbName.toLowerCase());
+                    const gradeMatch = !parentChildGrade || studentData.grade === parentChildGrade;
+
+                    if (isMounted) {
+                        if (namesMatch && gradeMatch) {
+                            setMatchStatus({
+                                status: 'exact_match',
+                                matchedStudent: studentData,
+                                message: 'Student Code and Student Details match correctly!'
+                            });
+                            // Auto-select linked student if not already selected
+                            if (!linkedStudentUid) onLink(studentData.uid);
+                        } else {
+                            setMatchStatus({
+                                status: 'mismatch',
+                                matchedStudent: studentData,
+                                message: `Code matches ${dbName} (Gr ${studentData.grade || 'N/A'}), but parent typed "${parentChildName}" (Gr ${parentChildGrade || 'N/A'}).`
+                            });
+                        }
+                    }
+                } else {
+                    if (isMounted) {
+                        setMatchStatus({
+                            status: 'not_found',
+                            matchedStudent: null,
+                            message: `Invalid Student Code "${parentCode}". No matching student found.`
+                        });
+                    }
+                }
+            } catch (err) {
+                console.error('[ParentLinkPicker] Verification error:', err);
+            } finally {
+                if (isMounted) setVerifying(false);
+            }
+        };
+
+        verifyStudentCode();
+
+        return () => { isMounted = false; };
+    }, [parentCode, parentChildName, parentChildGrade]);
+
+    const runSearch = async () => {
+        if (!searchText.trim()) return;
+        setSearching(true);
+        try {
+            const snap = await getDocs(
+                query(collection(db, 'students'), where('schoolId', '==', schoolId))
+            );
+            const q = searchText.trim().toLowerCase();
+            const matches = snap.docs
+                .map(d => ({ uid: d.id, ...d.data() }))
+                .filter(s => `${s.firstName || ''} ${s.lastName || ''}`.toLowerCase().includes(q)
+                    || s.studentCode?.toLowerCase() === q);
+            setResults(matches.slice(0, 8));
+        } finally {
+            setSearching(false);
+        }
+    };
+
+    return (
+        <div className="mt-2 p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/60 space-y-3">
+            {/* Automatic Match Verification Card */}
+            <div>
+                <p className="text-[10px] font-black uppercase tracking-wider text-slate-500 mb-1.5">
+                    Security & Verification Status
+                </p>
+
+                {verifying ? (
+                    <div className="flex items-center gap-2 text-xs text-slate-500">
+                        <div className="w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" />
+                        Verifying student code...
+                    </div>
+                ) : matchStatus.status === 'exact_match' ? (
+                    <div className="p-2.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900 text-emerald-800 dark:text-emerald-300 flex items-start gap-2 text-xs">
+                        <CheckCircle2 size={16} className="text-emerald-600 dark:text-emerald-400 mt-0.5 shrink-0" />
+                        <div>
+                            <p className="font-bold">{matchStatus.message}</p>
+                            <p className="text-[11px] opacity-90">
+                                Verified Learner: <strong>{matchStatus.matchedStudent.displayName}</strong> ({matchStatus.matchedStudent.studentCode}) · Grade {matchStatus.matchedStudent.grade}
+                            </p>
+                        </div>
+                    </div>
+                ) : matchStatus.status === 'mismatch' ? (
+                    <div className="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 text-amber-800 dark:text-amber-300 flex items-start gap-2 text-xs">
+                        <AlertTriangle size={16} className="text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+                        <div>
+                            <p className="font-bold">Mismatch Detected</p>
+                            <p className="text-[11px] opacity-90">{matchStatus.message}</p>
+                        </div>
+                    </div>
+                ) : (
+                    <div className="p-2.5 rounded-lg bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900 text-rose-800 dark:text-rose-300 flex items-start gap-2 text-xs">
+                        <XCircle size={16} className="text-rose-600 dark:text-rose-400 mt-0.5 shrink-0" />
+                        <div>
+                            <p className="font-bold">Code Check Failed</p>
+                            <p className="text-[11px] opacity-90">{matchStatus.message}</p>
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            {/* Manual Link & Override Search */}
+            <div className="pt-2 border-t border-slate-600 dark:border-slate-800">
+                <p className="text-[10px] font-bold text-slate-600 dark:text-slate-600 mb-1.5">
+                    Manual Learner Search & Link
+                </p>
+                <div className="flex gap-1.5">
+                    <input
+                        value={searchText}
+                        onChange={(e) => setSearchText(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && runSearch()}
+                        placeholder="Search by learner name or code"
+                        className="flex-1 px-2.5 py-1.5 text-xs rounded-lg border border-slate-800 dark:border-slate-800 dark:bg-slate-800 outline-none focus:border-violet-500 text-white"
+                    />
+                    <button
+                        onClick={runSearch}
+                        disabled={searching}
+                        className="px-3 py-1.5 rounded-lg text-xs text-white font-bold bg-slate-800 dark:bg-white dark:text-slate-900 disabled:opacity-50 flex items-center gap-1"
+                    >
+                        <Search size={12} />
+                        {searching ? '…' : 'Search'}
+                    </button>
+                </div>
+
+                {results.length > 0 && (
+                    <div className="mt-2 space-y-1 max-h-40 overflow-y-auto">
+                        {results.map((s) => (
+                            <button
+                                key={s.uid}
+                                onClick={() => onLink(s.uid)}
+                                className={`w-full flex items-center justify-between px-2.5 py-2 rounded-lg text-xs text-left transition-colors ${linkedStudentUid === s.uid
+                                    ? 'bg-emerald-100 dark:bg-emerald-900/40 text-white dark:text-white font-bold border border-emerald-300 dark:border-emerald-800'
+                                    : 'hover:bg-slate-100 dark:hover:bg-slate-800 dark:text-white'
+                                    }`}
+                            >
+                                <span>{s.firstName} {s.lastName} {s.studentCode ? `(${s.studentCode})` : ''} {s.grade ? `· Gr ${s.grade}` : ''}</span>
+                                {linkedStudentUid === s.uid && <CheckCircle2 size={14} className="text-emerald-600 dark:text-emerald-400" />}
+                            </button>
+                        ))}
+                    </div>
+                )}
+
+                {!linkedStudentUid && (
+                    <p className="text-[10px] font-semibold text-amber-600 dark:text-amber-400 mt-2">
+                        ⚠ Select or confirm a learner above to enable approval.
+                    </p>
+                )}
+            </div>
+        </div>
+    );
+}
 
 // ── Activity Card ─────────────────────────────────────────────────────────
 
-function ActivityCard({ event, onApprove, onDecline, processingId, removing }) {
-    const [expanded,         setExpanded]         = useState(false);
+function ActivityCard({ event, schoolId, onApprove, onDecline, processingId, removing }) {
+    const [expanded, setExpanded] = useState(false);
     const [showDeclineInput, setShowDeclineInput] = useState(false);
-    const [declineReason,    setDeclineReason]    = useState('');
+    const [declineReason, setDeclineReason] = useState('');
+    const [linkedStudentUid, setLinkedStudentUid] = useState(event.linkedStudentUid || null);
 
-    const styles       = ROLE_STYLES[event.actorRole] || ROLE_STYLES.default;
-    const isNew        = !event.read;
-    const isPending    = event.type === 'user_joined' && !event.approvalStatus;
+    const styles = ROLE_STYLES[event.actorRole] || ROLE_STYLES.default;
+    const isNew = !event.read;
+    const isPending = event.type === 'user_joined' && !event.approvalStatus;
     const isProcessing = processingId === event.id;
-    const status       = event.approvalStatus;
-    const typeLabel    = {
-        user_joined:    'New Registration',
-        user_approved:  'User Approved',
-        user_declined:  'User Declined',
-        exam_uploaded:  'Exam Uploaded',
+    const status = event.approvalStatus;
+    const typeLabel = {
+        user_joined: 'New Registration',
+        user_approved: 'User Approved',
+        user_declined: 'User Declined',
+        exam_uploaded: 'Exam Uploaded',
     }[event.type] || 'Activity';
+
+    // Extract User Codes across different potential schema keys
+    const userCode = event.studentCode || event.teacherCode || event.userCode || event.code;
 
     return (
         <div className={`border-b border-slate-50 dark:border-slate-800
                          last:border-0 transition-all duration-300 ease-in-out
-                         ${removing ? 'opacity-0 scale-95 -translate-x-4 max-h-0 py-0 overflow-hidden' : 'opacity-100 max-h-[500px]'}
+                         ${removing ? 'opacity-0 scale-95 -translate-x-4 max-h-0 py-0 overflow-hidden' : 'opacity-100 max-h-[800px]'}
                          ${isNew ? 'bg-indigo-50/40 dark:bg-indigo-900/10' : ''}`}>
 
             {/* Main row */}
@@ -64,11 +271,11 @@ function ActivityCard({ event, onApprove, onDecline, processingId, removing }) {
                                  flex-shrink-0 text-lg select-none overflow-hidden ${styles.bg}`}>
                     {event.actorPhoto
                         ? <img src={event.actorPhoto} alt={event.actorName}
-                               className="w-10 h-10 object-cover rounded-xl"
-                               onError={e => { e.target.style.display = 'none'; }} />
+                            className="w-10 h-10 object-cover rounded-xl"
+                            onError={e => { e.target.style.display = 'none'; }} />
                         : event.type === 'user_approved' ? '✅'
-                        : event.type === 'user_declined' ? '❌'
-                        : styles.icon
+                            : event.type === 'user_declined' ? '❌'
+                                : styles.icon
                     }
                 </div>
 
@@ -84,7 +291,7 @@ function ActivityCard({ event, onApprove, onDecline, processingId, removing }) {
                                 )}
                             </p>
                             <p className="text-[11px] text-slate-400 truncate">
-                                {event.actorEmail || event.targetEmail || ''}
+                                {event.actorEmail || event.targetEmail || event.email || 'No email provided'}
                             </p>
                         </div>
                         <span className="text-[10px] text-slate-400 flex-shrink-0 whitespace-nowrap pt-0.5">
@@ -105,6 +312,16 @@ function ActivityCard({ event, onApprove, onDecline, processingId, removing }) {
                                 {event.actorRole}
                             </span>
                         )}
+
+                        {/* Display User Code Badge */}
+                        {userCode && (
+                            <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full
+                                             bg-indigo-100 text-indigo-700
+                                             dark:bg-indigo-900/40 dark:text-indigo-300 flex items-center gap-1">
+                                <Key size={10} /> {userCode}
+                            </span>
+                        )}
+
                         {event.grade && (
                             <span className="text-[10px] font-bold px-2 py-0.5 rounded-full
                                              bg-slate-100 dark:bg-slate-800
@@ -122,7 +339,7 @@ function ActivityCard({ event, onApprove, onDecline, processingId, removing }) {
                             <span className="text-[10px] font-black px-2 py-0.5 rounded-full
                                              bg-amber-100 text-amber-700
                                              dark:bg-amber-900/30 dark:text-amber-400">
-                                ⏳ Pending
+                                ⏳ Pending Approval
                             </span>
                         )}
                         {status === 'approved' && (
@@ -145,78 +362,165 @@ function ActivityCard({ event, onApprove, onDecline, processingId, removing }) {
                     <button
                         onClick={() => setExpanded(v => !v)}
                         className="mt-2 flex items-center gap-1 text-[10px]
-                                   text-indigo-400 hover:text-indigo-600 font-bold"
+                                   text-indigo-500 hover:text-indigo-600 font-bold"
                     >
                         {expanded ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
-                        {expanded ? 'Hide details' : 'View details'}
+                        {expanded ? 'Hide full profile details' : 'View full user details'}
                     </button>
 
-                    {/* Expanded panel */}
+                    {/* Expanded Principal Detail View */}
                     {expanded && (
-                        <div className="mt-2 p-3 bg-slate-50 dark:bg-slate-800/60
-                                        rounded-xl text-xs space-y-1.5
-                                        border border-slate-100 dark:border-slate-700">
-                            {event.actorName  && <p className="text-slate-600 dark:text-slate-300"><span className="font-bold w-20 inline-block">Name</span>{event.actorName}</p>}
-                            {event.actorEmail && <p className="text-slate-600 dark:text-slate-300"><span className="font-bold w-20 inline-block">Email</span>{event.actorEmail}</p>}
-                            {event.actorRole  && <p className="text-slate-600 dark:text-slate-300 capitalize"><span className="font-bold w-20 inline-block">Role</span>{event.actorRole}</p>}
-                            {event.grade      && <p className="text-slate-600 dark:text-slate-300"><span className="font-bold w-20 inline-block">Grade</span>{event.grade}</p>}
-                            {event.schoolName && <p className="text-slate-600 dark:text-slate-300"><span className="font-bold w-20 inline-block">School</span>{event.schoolName}</p>}
-                            {(event.subjects || []).length > 0 && (
+                        <div className="mt-2 p-3.5 bg-slate-50 dark:bg-slate-800/60
+                    rounded-xl text-xs space-y-3
+                    border border-slate-100 dark:border-slate-700">
+                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                                Principal Audit & Verification Details
+                            </p>
+
+                            {/* Parent / Actor Primary Details */}
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5">
                                 <p className="text-slate-600 dark:text-slate-300">
-                                    <span className="font-bold w-20 inline-block">Subjects</span>
-                                    {event.subjects.join(', ')}
+                                    <span className="font-bold text-slate-400 w-24 inline-block">Full Name</span>
+                                    {event.actorName || event.displayName || 'N/A'}
                                 </p>
-                            )}
-                            {event.approvedBy && (
                                 <p className="text-slate-600 dark:text-slate-300">
-                                    <span className="font-bold w-20 inline-block">
-                                        {status === 'approved' ? 'Approved' : 'Declined'}
-                                    </span>
-                                    by {event.approvedBy}
+                                    <span className="font-bold text-slate-400 w-24 inline-block">Email</span>
+                                    {event.actorEmail || event.email || 'N/A'}
                                 </p>
-                            )}
-                            {event.declineReason && (
-                                <p className="text-red-500 dark:text-red-400">
-                                    <span className="font-bold w-20 inline-block">Reason</span>
-                                    {event.declineReason}
+                                <p className="text-slate-600 dark:text-slate-300 capitalize">
+                                    <span className="font-bold text-slate-400 w-24 inline-block">Role</span>
+                                    {event.actorRole || event.role || 'N/A'}
                                 </p>
+                                {userCode && (
+                                    <p className="text-indigo-600 dark:text-indigo-300 font-bold">
+                                        <span className="font-bold text-slate-400 w-24 inline-block">Code</span>
+                                        <span className="font-mono bg-indigo-50 dark:bg-indigo-900/50 px-1.5 py-0.5 rounded">{userCode}</span>
+                                    </p>
+                                )}
+                                {event.phone && (
+                                    <p className="text-slate-600 dark:text-slate-300">
+                                        <span className="font-bold text-slate-400 w-24 inline-block">Phone</span>
+                                        {event.phone}
+                                    </p>
+                                )}
+                                {event.schoolName && (
+                                    <p className="text-slate-600 dark:text-slate-300">
+                                        <span className="font-bold text-slate-400 w-24 inline-block">School</span>
+                                        {event.schoolName}
+                                    </p>
+                                )}
+                            </div>
+
+                            {/* Linked Student / Children Details */}
+                            {(event.actorRole === 'parent' || event.children?.length > 0 || event.childName) && (
+                                <div className="pt-2 border-t border-slate-200/60 dark:border-slate-700/60 space-y-2">
+                                    <p className="text-[10px] font-bold text-violet-600 dark:text-violet-400 uppercase tracking-wider">
+                                        Linked Learner Profile(s)
+                                    </p>
+
+                                    {/* Render from children array if present */}
+                                    {(event.children && event.children.length > 0) ? (
+                                        <div className="space-y-1.5">
+                                            {event.children.map((child, idx) => (
+                                                <div key={idx} className="p-2 rounded-lg bg-emerald-50/50 dark:bg-emerald-950/20 border border-emerald-200/50 dark:border-emerald-900/30 flex items-center justify-between text-emerald-900 dark:text-emerald-200">
+                                                    <div>
+                                                        <p className="font-bold">{child.childName || child.name || 'Unnamed Student'}</p>
+                                                        <p className="text-[11px] text-emerald-700 dark:text-emerald-400">
+                                                            Code: <span className="font-mono">{child.studentCode || 'N/A'}</span>
+                                                            {child.childGrade && ` · Grade ${child.childGrade}`}
+                                                        </p>
+                                                    </div>
+                                                    <span className="text-[10px] font-black px-2 py-0.5 rounded bg-emerald-200/60 dark:bg-emerald-800 text-emerald-800 dark:text-emerald-200">
+                                                        VERIFIED LINK
+                                                    </span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    ) : (event.childName || event.studentCode) ? (
+                                        /* Fallback to single child fields */
+                                        <div className="p-2 rounded-lg bg-emerald-50/50 dark:bg-emerald-950/20 border border-emerald-200/50 dark:border-emerald-900/30 flex items-center justify-between text-emerald-900 dark:text-emerald-200">
+                                            <div>
+                                                <p className="font-bold">{event.childName}</p>
+                                                <p className="text-[11px] text-emerald-700 dark:text-emerald-400">
+                                                    Code: <span className="font-mono">{event.childCode || event.studentCode || 'N/A'}</span>
+                                                    {event.childGrade && ` · Grade ${event.childGrade}`}
+                                                </p>
+                                            </div>
+                                            <span className="text-[10px] font-black px-2 py-0.5 rounded bg-emerald-200/60 dark:bg-emerald-800 text-emerald-800 dark:text-emerald-200">
+                                                VERIFIED LINK
+                                            </span>
+                                        </div>
+                                    ) : (
+                                        <p className="text-amber-600 dark:text-amber-400 italic text-[11px]">
+                                            ⚠ No linked student record attached to this parent request.
+                                        </p>
+                                    )}
+                                </div>
                             )}
-                            {event.timestamp && (
-                                <p className="text-slate-400 pt-1 border-t
-                                              border-slate-100 dark:border-slate-700">
-                                    <span className="font-bold w-20 inline-block">Time</span>
-                                    {new Date(event.timestamp).toLocaleString('en-ZA', {
-                                        dateStyle: 'medium', timeStyle: 'short'
-                                    })}
-                                </p>
-                            )}
+
+                            {/* Approval Audit Info */}
+                            <div className="pt-2 border-t border-slate-200 dark:border-slate-700 space-y-1">
+                                {status && (
+                                    <p className="text-slate-600 dark:text-slate-300 capitalize">
+                                        <span className="font-bold text-slate-400 w-24 inline-block">Status</span>
+                                        <span className={status === 'approved' ? 'text-emerald-600 font-bold' : 'text-red-500 font-bold'}>
+                                            {status}
+                                        </span>
+                                        {event.approvedBy && ` by ${event.approvedBy}`}
+                                    </p>
+                                )}
+                                {event.declineReason && (
+                                    <p className="text-red-500 dark:text-red-400">
+                                        <span className="font-bold text-slate-400 w-24 inline-block">Reason</span>
+                                        {event.declineReason}
+                                    </p>
+                                )}
+                                {event.timestamp && (
+                                    <p className="text-slate-400 text-[10px]">
+                                        <span className="font-bold w-24 inline-block">Registered At</span>
+                                        {new Date(event.timestamp).toLocaleString('en-ZA', {
+                                            dateStyle: 'medium', timeStyle: 'short'
+                                        })}
+                                    </p>
+                                )}
+                            </div>
                         </div>
+                    )}
+
+                    {/* Parent-Student Picker step prior to approval */}
+                    {isPending && event.actorRole === 'parent' && (
+                        <ParentLinkPicker
+                            event={event}
+                            schoolId={schoolId}
+                            linkedStudentUid={linkedStudentUid}
+                            onLink={(uid) => setLinkedStudentUid(uid)}
+                        />
                     )}
 
                     {/* Unknown user warning */}
                     {event.type === 'user_joined' && (
-                        <a href={`mailto:support@eduket.tech?subject=Unknown user: ${event.actorEmail}`}
-                           className="mt-1.5 flex items-center gap-1 text-[10px]
+                        <a href={`mailto:support@eduket.tech?subject=Unknown user verification: ${event.actorEmail}`}
+                            className="mt-1.5 flex items-center gap-1 text-[10px]
                                       text-amber-500 hover:text-amber-700 font-bold">
                             <AlertTriangle size={10} />
-                            Don't recognise this person? Report to support
+                            Don't recognise this person? Flag to support
                         </a>
                     )}
                 </div>
             </div>
 
-            {/* Approve / Decline */}
+            {/* Approve / Decline Actions */}
             {isPending && (
                 <div className="px-5 pb-4 pt-0">
                     {!showDeclineInput ? (
                         <div className="flex gap-2">
                             <button
-                                onClick={() => onApprove(event)}
-                                disabled={isProcessing}
+                                disabled={isProcessing || (event.actorRole === 'parent' && !linkedStudentUid)}
+                                onClick={() => onApprove(event, linkedStudentUid)}
                                 className="flex-1 flex items-center justify-center gap-1.5
                                            py-2.5 bg-emerald-600 hover:bg-emerald-700
                                            disabled:opacity-50 text-white text-xs font-black
-                                           rounded-xl transition-colors"
+                                           rounded-xl transition-colors cursor-pointer"
                             >
                                 {isProcessing
                                     ? <div className="w-3.5 h-3.5 border-2 border-white
@@ -230,7 +534,7 @@ function ActivityCard({ event, onApprove, onDecline, processingId, removing }) {
                                 className="flex-1 flex items-center justify-center gap-1.5
                                            py-2.5 bg-red-600 hover:bg-red-700
                                            disabled:opacity-50 text-white text-xs font-black
-                                           rounded-xl transition-colors"
+                                           rounded-xl transition-colors cursor-pointer"
                             >
                                 <XCircle size={13} /> Decline
                             </button>
@@ -264,7 +568,7 @@ function ActivityCard({ event, onApprove, onDecline, processingId, removing }) {
                                 <button
                                     onClick={() => { setShowDeclineInput(false); setDeclineReason(''); }}
                                     className="px-4 py-2 bg-slate-100 dark:bg-slate-800
-                                               text-slate-600 text-xs font-bold rounded-xl"
+                                               text-slate-600 dark:text-slate-300 text-xs font-bold rounded-xl"
                                 >
                                     Cancel
                                 </button>
@@ -280,7 +584,7 @@ function ActivityCard({ event, onApprove, onDecline, processingId, removing }) {
                                 bg-emerald-50 dark:bg-emerald-900/20 rounded-xl">
                     <CheckCircle size={13} className="text-emerald-500 flex-shrink-0" />
                     <p className="text-[11px] text-emerald-700 dark:text-emerald-400 font-bold">
-                        Approved — user can now access the school
+                        Approved — user active in school system
                     </p>
                 </div>
             )}
@@ -309,13 +613,13 @@ function ActivityCard({ event, onApprove, onDecline, processingId, removing }) {
 // ══════════════════════════════════════════════════════════════════════════
 
 export function ActivityFeed({ schoolId, apiUrl, authToken }) {
-    const [events,       setEvents]       = useState([]);
-    const [removingIds,  setRemovingIds]  = useState(new Set());
-    const [loading,      setLoading]      = useState(true);
+    const [events, setEvents] = useState([]);
+    const [removingIds, setRemovingIds] = useState(new Set());
+    const [loading, setLoading] = useState(true);
     const [processingId, setProcessingId] = useState(null);
-    const [unread,       setUnread]       = useState(0);
-    const [error,        setError]        = useState('');
-    const [isOpen,       setIsOpen]       = useState(true);
+    const [unread, setUnread] = useState(0);
+    const [error, setError] = useState('');
+    const [isOpen, setIsOpen] = useState(true);
 
     // ── Real-time Firestore listener ──────────────────────────────────────
     useEffect(() => {
@@ -345,10 +649,8 @@ export function ActivityFeed({ schoolId, apiUrl, authToken }) {
                 });
 
                 if (removedDocIds.length > 0) {
-                    // Mark records as removing to trigger the exit animation
                     setRemovingIds(prev => new Set([...prev, ...removedDocIds]));
 
-                    // Remove records after animation completes (300ms transition)
                     setTimeout(() => {
                         setEvents(prev => prev.filter(e => !removedDocIds.includes(e.id)));
                         setRemovingIds(prev => {
@@ -359,19 +661,16 @@ export function ActivityFeed({ schoolId, apiUrl, authToken }) {
                     }, 300);
                 }
 
-                // Parse snapshot docs
                 const currentDocs = snap.docs.map(d => ({
-                    id:        d.id,
+                    id: d.id,
                     ...d.data(),
                     timestamp: d.data().timestamp?.toDate?.()?.toISOString() || '',
                 }));
 
-                // Keep removing documents visible during exit animation
                 setEvents(prevEvents => {
                     const activeRemoving = prevEvents.filter(e => removingIds.has(e.id));
                     const updatedList = [...currentDocs];
-                    
-                    // Re-insert currently animating records if missing
+
                     activeRemoving.forEach(item => {
                         if (!updatedList.some(e => e.id === item.id)) {
                             updatedList.push(item);
@@ -410,46 +709,152 @@ export function ActivityFeed({ schoolId, apiUrl, authToken }) {
     };
 
     // ── Approve ────────────────────────────────────────────────────────────
-    const handleApprove = async (event) => {
+    const handleApprove = async (event, linkedStudentUid) => {
         setProcessingId(event.id);
-        try {
-            await updateDoc(doc(db, 'schoolActivity', event.id), {
-                approvalStatus: 'approved',
-                approvedBy:     'Principal',
-                approvedAt:     serverTimestamp(),
-                read:           true,
-            });
 
-            if (event.actorUid) {
-                const roleCol = event.actorRole === 'teacher' ? 'teachers'
-                              : event.actorRole === 'student' ? 'students'
-                              : 'users';
-                await updateDoc(doc(db, roleCol, event.actorUid), {
-                    approved:       true,
-                    approvalStatus: 'approved',
-                    approvedBy:     'Principal',
-                    approvedAt:     serverTimestamp(),
-                });
-                await updateDoc(doc(db, 'users', event.actorUid), {
-                    approved:       true,
-                    approvalStatus: 'approved',
-                });
+        try {
+            const batch = writeBatch(db);
+            let targetStudentUid = linkedStudentUid || event.linkedStudentId || event.children?.[0]?.linkedStudentId || null;
+            let studentDataPayload = null;
+
+            const codeToSearch = (
+                event.studentCode ||
+                event.children?.[0]?.studentCode ||
+                ''
+            ).trim().toUpperCase();
+
+            if (event.actorRole === 'parent') {
+                let studentDocSnap = null;
+
+                if (targetStudentUid) {
+                    const snap = await getDoc(doc(db, 'students', targetStudentUid));
+                    if (snap.exists()) studentDocSnap = snap;
+                }
+
+                if (!studentDocSnap && codeToSearch) {
+                    const q = query(
+                        collection(db, 'students'),
+                        where('studentCode', '==', codeToSearch)
+                    );
+                    const querySnap = await getDocs(q);
+                    if (!querySnap.empty) {
+                        studentDocSnap = querySnap.docs[0];
+                        targetStudentUid = studentDocSnap.id;
+                    }
+                }
+
+                if (studentDocSnap) {
+                    const sData = studentDocSnap.data();
+                    const matchedName = sData.displayName || `${sData.firstName || ''} ${sData.lastName || ''}`.trim();
+
+                    studentDataPayload = {
+                        studentCode: sData.studentCode || codeToSearch,
+                        childName: matchedName || event.childName || event.children?.[0]?.childName || '',
+                        childGrade: sData.grade || event.childGrade || event.children?.[0]?.childGrade || '',
+                        linkedStudentId: targetStudentUid,
+                    };
+                } else {
+                    studentDataPayload = {
+                        studentCode: codeToSearch,
+                        childName: event.childName || event.children?.[0]?.childName || '',
+                        childGrade: event.childGrade || event.children?.[0]?.childGrade || '',
+                        linkedStudentId: null,
+                    };
+                }
             }
 
-            await addDoc(collection(db, 'schoolActivity'), {
-                schoolId:    schoolId,
-                type:        'user_approved',
-                actorName:   'Principal',
-                targetName:  event.actorName,
-                targetEmail: event.actorEmail,
-                targetRole:  event.actorRole,
-                description: `Principal approved ${event.actorName} as ${event.actorRole}`,
-                timestamp:   serverTimestamp(),
-                read:        true,
+            // 1. Update activity feed item
+            const activityRef = doc(db, 'schoolActivity', event.id);
+            batch.update(activityRef, {
+                approvalStatus: 'approved',
+                approvedBy: 'Principal',
+                approvedAt: serverTimestamp(),
+                read: true,
+                ...(targetStudentUid ? { linkedStudentUid: targetStudentUid } : {}),
+                ...(studentDataPayload ? {
+                    children: [studentDataPayload],
+                    childName: studentDataPayload.childName,
+                    childCode: studentDataPayload.studentCode,
+                    childGrade: studentDataPayload.childGrade,
+                } : {}),
             });
+
+            // 2. Update parent target documents
+            if (event.actorUid) {
+                const roleCol = event.actorRole === 'teacher' ? 'teachers'
+                    : event.actorRole === 'student' ? 'students'
+                        : event.actorRole === 'parent' ? 'parents'
+                            : 'users';
+
+                const userRef = doc(db, 'users', event.actorUid);
+                const roleRef = doc(db, roleCol, event.actorUid);
+
+                const profileUpdates = {
+                    approved: true,
+                    approvalStatus: 'approved',
+                    approvedBy: 'Principal',
+                    approvedAt: serverTimestamp(),
+                    updatedAt: serverTimestamp(),
+                    ...(studentDataPayload ? {
+                        children: [studentDataPayload],
+                        childName: studentDataPayload.childName,
+                        studentCode: studentDataPayload.studentCode,
+                        childGrade: studentDataPayload.childGrade,
+                    } : {}),
+                };
+
+                batch.update(userRef, profileUpdates);
+                if (roleCol !== 'users') {
+                    batch.update(roleRef, profileUpdates);
+                }
+
+                // 3. Set parent access mapping
+                // Inside handleApprove (replace step 3/4 where parentAccess is saved)
+                if (targetStudentUid) {
+                    const currentUserId = auth.currentUser ? auth.currentUser.uid : event.schoolId;
+                    const parentAccessRef = doc(db, 'parentAccess', `${event.actorUid}_${targetStudentUid}`);
+
+                    // Calculate 14-day trial expiration date
+                    const trialDays = 14;
+                    const trialEndsAt = new Date();
+                    trialEndsAt.setDate(trialEndsAt.getDate() + trialDays);
+
+                    batch.set(parentAccessRef, {
+                        parentUid: event.actorUid,
+                        studentUid: targetStudentUid,
+                        schoolId: event.schoolId || schoolId,
+                        grantedAt: serverTimestamp(),
+                        grantedBy: currentUserId,
+                        subscriptionStatus: 'trial',
+                        trialStartedAt: serverTimestamp(),
+                        trialExpiresAt: Timestamp.fromDate(trialEndsAt),
+                        subscriptionExpiresAt: null,
+                    }, { merge: true });
+                }
+            }
+
+            // 4. Create approval confirmation notice
+            const userEmail = event.actorEmail || event.email || 'No email provided';
+            const approvalNoticeRef = doc(collection(db, 'schoolActivity'));
+
+            batch.set(approvalNoticeRef, {
+                schoolId: schoolId || event.schoolId,
+                type: 'user_approved',
+                actorUid: auth.currentUser?.uid || event.actorUid,
+                actorName: 'Principal',
+                targetName: event.actorName || event.displayName || 'User',
+                targetEmail: userEmail,
+                targetRole: event.actorRole || 'parent',
+                description: `Principal approved ${event.actorName || event.displayName} as ${event.actorRole}`,
+                timestamp: serverTimestamp(),
+                read: true,
+            });
+
+            await batch.commit();
+
         } catch (err) {
             console.error('[Activity] Approve error:', err);
-            alert('Approval failed. Please try again.');
+            alert('Approval failed due to permissions. Ensure rule updates are published in Firebase Console.');
         } finally {
             setProcessingId(null);
         }
@@ -461,57 +866,57 @@ export function ActivityFeed({ schoolId, apiUrl, authToken }) {
         try {
             await updateDoc(doc(db, 'schoolActivity', event.id), {
                 approvalStatus: 'declined',
-                approvedBy:     'Principal',
-                declineReason:  reason || '',
-                approvedAt:     serverTimestamp(),
-                read:           true,
+                approvedBy: 'Principal',
+                declineReason: reason || '',
+                approvedAt: serverTimestamp(),
+                read: true,
             });
 
             if (event.actorUid) {
                 const roleCol = event.actorRole === 'teacher' ? 'teachers'
-                              : event.actorRole === 'student' ? 'students'
-                              : 'users';
+                    : event.actorRole === 'student' ? 'students'
+                        : 'users';
                 await updateDoc(doc(db, roleCol, event.actorUid), {
-                    approved:       false,
+                    approved: false,
                     approvalStatus: 'declined',
-                    declineReason:  reason || '',
-                    approvedBy:     'Principal',
-                    approvedAt:     serverTimestamp(),
+                    declineReason: reason || '',
+                    approvedBy: 'Principal',
+                    approvedAt: serverTimestamp(),
                 });
                 await updateDoc(doc(db, 'users', event.actorUid), {
-                    approved:       false,
+                    approved: false,
                     approvalStatus: 'declined',
                 });
             }
 
             await addDoc(collection(db, 'schoolActivity'), {
-                schoolId:      schoolId,
-                type:          'user_declined',
-                actorName:     'Principal',
-                targetName:    event.actorName,
-                targetEmail:   event.actorEmail,
-                targetRole:    event.actorRole,
+                schoolId: schoolId,
+                type: 'user_declined',
+                actorName: 'Principal',
+                targetName: event.actorName,
+                targetEmail: event.actorEmail,
+                targetRole: event.actorRole,
                 declineReason: reason || '',
-                description:   `Principal declined ${event.actorName}`,
-                timestamp:     serverTimestamp(),
-                read:          true,
+                description: `Principal declined ${event.actorName}`,
+                timestamp: serverTimestamp(),
+                read: true,
             });
 
             if (apiUrl && event.actorUid) {
                 fetch(`${apiUrl.replace(/\/+$/, '')}/approve-school-user`, {
-                    method:  'POST',
+                    method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                         ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
                     },
                     body: JSON.stringify({
-                        activityId:    event.id,
-                        actorUid:      event.actorUid,
-                        actorEmail:    event.actorEmail,
-                        actorName:     event.actorName,
-                        actorRole:     event.actorRole,
+                        activityId: event.id,
+                        actorUid: event.actorUid,
+                        actorEmail: event.actorEmail,
+                        actorName: event.actorName,
+                        actorRole: event.actorRole,
                         schoolId,
-                        action:        'declined',
+                        action: 'declined',
                         declineReason: reason || '',
                     }),
                 }).catch(err => console.warn('[Decline] Backend update failed:', err));
@@ -525,14 +930,12 @@ export function ActivityFeed({ schoolId, apiUrl, authToken }) {
     };
 
     // ── Counts ─────────────────────────────────────────────────────────────
-    const pendingCount  = events.filter(e => e.type === 'user_joined' && !e.approvalStatus).length;
-    const approvedCount = events.filter(e => e.approvalStatus === 'approved').length;
-    const declinedCount = events.filter(e => e.approvalStatus === 'declined').length;
+    const pendingCount = events.filter(e => e.type === 'user_joined' && !e.approvalStatus).length;
 
     // ── Render ─────────────────────────────────────────────────────────────
     return (
         <div className="bg-white dark:bg-slate-900 rounded-2xl border
-                        border-slate-200 dark:border-slate-800 overflow-hidden">
+                        border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
 
             {/* Collapsible header */}
             <button
@@ -542,109 +945,63 @@ export function ActivityFeed({ schoolId, apiUrl, authToken }) {
                            hover:bg-slate-50 dark:hover:bg-slate-800/50
                            transition-colors cursor-pointer"
             >
-                <div className="flex items-center gap-2">
-                    <Bell size={15} className="text-slate-500" />
+                <div className="flex items-center gap-2.5">
+                    <div className="relative">
+                        <Bell size={18} className="text-slate-600 dark:text-slate-300" />
+                        {unread > 0 && (
+                            <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-indigo-600 rounded-full animate-pulse" />
+                        )}
+                    </div>
                     <h3 className="font-black text-sm text-slate-800 dark:text-white">
-                        School Activity
+                        School Activity & Approvals
                     </h3>
-                    {unread > 0 && (
-                        <span className="bg-red-500 text-white text-[10px] font-black
-                                         px-2 py-0.5 rounded-full">
-                            {unread} new
-                        </span>
-                    )}
                     {pendingCount > 0 && (
-                        <span className="bg-amber-500 text-white text-[10px] font-black
-                                         px-2 py-0.5 rounded-full animate-pulse">
-                            {pendingCount} pending
+                        <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+                            {pendingCount} Pending
                         </span>
                     )}
                 </div>
+
                 <div className="flex items-center gap-3">
                     {unread > 0 && (
-                        <button
-                            onClick={e => { e.stopPropagation(); markAllRead(); }}
-                            className="text-[10px] text-indigo-500 hover:text-indigo-700
-                                       font-bold flex items-center gap-1"
-                        >
-                            <CheckCircle size={10} /> Mark read
-                        </button>
+                        <span onClick={(e) => { e.stopPropagation(); markAllRead(); }}
+                            className="text-[11px] text-indigo-500 hover:text-indigo-600 font-bold">
+                            Mark all read
+                        </span>
                     )}
-                    <span className="text-[10px] text-slate-400">
-                        {events.length} events
-                    </span>
-                    <ChevronUp
-                        size={14}
-                        className={`text-slate-400 transition-transform duration-200
-                                    ${isOpen ? '' : 'rotate-180'}`}
-                    />
+                    {isOpen ? <ChevronUp size={16} className="text-slate-400" /> : <ChevronDown size={16} className="text-slate-400" />}
                 </div>
             </button>
 
+            {/* Body */}
             {isOpen && (
-                <>
-                    {/* Stats bar */}
-                    {events.length > 0 && (
-                        <div className="grid grid-cols-3 divide-x divide-slate-100
-                                        dark:divide-slate-800 border-y border-slate-100
-                                        dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
-                            <div className="px-4 py-2.5 text-center">
-                                <p className="text-base font-black text-amber-500">{pendingCount}</p>
-                                <p className="text-[10px] text-slate-400 uppercase tracking-widest">Pending</p>
-                            </div>
-                            <div className="px-4 py-2.5 text-center">
-                                <p className="text-base font-black text-emerald-500">{approvedCount}</p>
-                                <p className="text-[10px] text-slate-400 uppercase tracking-widest">Approved</p>
-                            </div>
-                            <div className="px-4 py-2.5 text-center">
-                                <p className="text-base font-black text-red-500">{declinedCount}</p>
-                                <p className="text-[10px] text-slate-400 uppercase tracking-widest">Declined</p>
-                            </div>
+                <div className="border-t border-slate-100 dark:border-slate-800 divide-y divide-slate-100 dark:divide-slate-800">
+                    {loading ? (
+                        <div className="p-8 text-center text-xs text-slate-400">
+                            Loading activity log...
                         </div>
+                    ) : error ? (
+                        <div className="p-6 text-center text-xs text-red-500">
+                            {error}
+                        </div>
+                    ) : events.length === 0 ? (
+                        <div className="p-8 text-center text-xs text-slate-400">
+                            No recent activity for this school.
+                        </div>
+                    ) : (
+                        events.map(event => (
+                            <ActivityCard
+                                key={event.id}
+                                event={event}
+                                schoolId={schoolId}
+                                onApprove={handleApprove}
+                                onDecline={handleDecline}
+                                processingId={processingId}
+                                removing={removingIds.has(event.id)}
+                            />
+                        ))
                     )}
-
-                    {/* Scrollable feed */}
-                    <div className="max-h-[520px] overflow-y-auto">
-                        {loading ? (
-                            <div className="p-5 space-y-4">
-                                {[1, 2, 3].map(i => (
-                                    <div key={i} className="flex gap-3 animate-pulse">
-                                        <div className="w-9 h-9 rounded-xl bg-slate-200
-                                                        dark:bg-slate-700 flex-shrink-0" />
-                                        <div className="flex-1 space-y-2">
-                                            <div className="h-3 bg-slate-200 dark:bg-slate-700 rounded w-3/4" />
-                                            <div className="h-3 bg-slate-200 dark:bg-slate-700 rounded w-1/2" />
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        ) : error ? (
-                            <div className="px-5 py-10 text-center">
-                                <AlertTriangle size={28} className="text-amber-400 mx-auto mb-3" />
-                                <p className="text-sm text-slate-500">{error}</p>
-                            </div>
-                        ) : events.length === 0 ? (
-                            <div className="px-5 py-12 text-center">
-                                <Clock size={32} className="text-slate-300 mx-auto mb-3" />
-                                <p className="text-sm text-slate-400 font-bold">No activity yet</p>
-                                <p className="text-xs text-slate-300 mt-1">
-                                    Teachers and students joining your school will appear here
-                                </p>
-                            </div>
-                        ) : (
-                            events.map(event => (
-                                <ActivityCard
-                                    key={event.id}
-                                    event={event}
-                                    onApprove={handleApprove}
-                                    onDecline={handleDecline}
-                                    processingId={processingId}
-                                    removing={removingIds.has(event.id)}
-                                />
-                            ))
-                        )}
-                    </div>
-                </>
+                </div>
             )}
         </div>
     );

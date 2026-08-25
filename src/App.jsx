@@ -47,7 +47,7 @@ import {
 } from 'react-router-dom';
 import {
   Home, FileText, BarChart3,
-  School, Sparkles, LayoutDashboard,
+  School, Sparkles, LayoutDashboard, HeartHandshake,
   Sun, Moon,
 } from 'lucide-react';
 import { onAuthStateChanged } from 'firebase/auth';
@@ -72,6 +72,7 @@ import logo from './img/eduket.png';
 import PrivacyPolicy from './pages/PrivacyPolicy';
 import TermsOfService from './pages/TermsOfService';
 import ContactUs from './pages/ContactUs';
+import ParentDashboard from './components/ParentDashboard';
 
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -144,7 +145,7 @@ function RequireRole({ user, loading, userProfile, role, children }) {
 function PendingApprovalPage({ userProfile }) {
   const handleSignOut = async () => {
     const { signOut } = await import('firebase/auth');
-    const { auth }    = await import('./utils/firebase');
+    const { auth } = await import('./utils/firebase');
     await signOut(auth);
     localStorage.removeItem('user-session');
     window.location.href = '/';
@@ -182,7 +183,7 @@ function PendingApprovalPage({ userProfile }) {
             <p className="font-bold mb-1">Your access was declined.</p>
             <p>Contact your school admin or{' '}
               <a href="mailto:support@eduket.tech"
-                 className="underline hover:text-red-300">
+                className="underline hover:text-red-300">
                 support@eduket.tech
               </a>
               {' '}if you believe this is a mistake.
@@ -209,9 +210,9 @@ function PendingApprovalPage({ userProfile }) {
 function App() {
 
   // ── Global state ──────────────────────────────────────────────────────────
-const [user, setUser] = useState(null);
-const [userProfile, setUserProfile] = useState(null);
-const [loading, setLoading] = useState(true);
+  const [user, setUser] = useState(null);
+  const [userProfile, setUserProfile] = useState(null);
+  const [loading, setLoading] = useState(true);
   // Legacy student session — kept for ExamPage / ProtectedRoute compatibility
   const [studentInfo, setStudentInfo] = useState(null);
 
@@ -241,7 +242,7 @@ const [loading, setLoading] = useState(true);
     return () => clearInterval(id);
   }, []);
 
-// ── getDocWithRetry — retries on permission-denied after registration ─────
+  // ── getDocWithRetry — retries on permission-denied after registration ─────
   const getDocWithRetry = async (docRef, retries = 3) => {
     for (let i = 0; i < retries; i++) {
       try {
@@ -255,14 +256,8 @@ const [loading, setLoading] = useState(true);
       }
     }
   };
- 
+
   // ── Primary Firebase auth listener ────────────────────────────────────────
-  // Single listener — handles everything:
-  //   signed out → clear all state
-  //   signed in, new user → no Firestore profile, setUserProfile(null)
-  //                         ProfileSetupWizard handles via onNeedsSetup
-  //   signed in, existing → load profile from users + role collection
-  //   always → setLoading(false) in finally block
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
       if (!firebaseUser) {
@@ -273,48 +268,48 @@ const [loading, setLoading] = useState(true);
         setLoading(false);
         return;
       }
- 
+
       setUser(firebaseUser);
- 
+
       try {
         // Force fresh token — without this, new Google users get
         // permission-denied because the token hasn't propagated yet
         await firebaseUser.getIdToken(true);
- 
+
         const userSnap = await getDocWithRetry(
           doc(db, 'users', firebaseUser.uid)
         );
- 
+
         if (!userSnap.exists()) {
           // New user — no profile yet. ProfileSetupWizard will handle this.
-          // DO NOT redirect — just show the landing page with setup modal.
           setUserProfile(null);
           return;
         }
- 
+
         const { role, schoolId } = userSnap.data();
- 
+
         const profileCol = role === 'principal' ? 'principals'
-          : role === 'teacher'                  ? 'teachers'
-          :                                       'students';
- 
+          : role === 'teacher' ? 'teachers'
+            : role === 'parent' ? 'parents'
+              : 'students';
+
         const profSnap = await getDocWithRetry(
           doc(db, profileCol, firebaseUser.uid)
         );
- 
+
         const profile = profSnap.exists()
           ? { ...profSnap.data(), role, schoolId, uid: firebaseUser.uid }
           : { role, schoolId, uid: firebaseUser.uid };
- 
+
         setUserProfile(profile);
- 
+
         if (role === 'student') {
           setStudentInfo(profile);
           localStorage.setItem('user-session', JSON.stringify(profile));
         } else {
           // Restore localStorage session only if it belongs to this user
           try {
-            const saved  = localStorage.getItem('user-session');
+            const saved = localStorage.getItem('user-session');
             const parsed = saved ? JSON.parse(saved) : null;
             if (parsed?.uid === firebaseUser.uid && parsed?.role === 'student') {
               setStudentInfo(parsed);
@@ -327,17 +322,15 @@ const [loading, setLoading] = useState(true);
             localStorage.removeItem('user-session');
           }
         }
- 
+
       } catch (err) {
         console.error('[App] Profile load error:', err.code, err.message);
         setUserProfile(null);
       } finally {
-        // CRITICAL: always runs — no matter what threw above
-        // Without finally, any error leaves loading=true forever
         setLoading(false);
       }
     });
- 
+
     return () => unsub();
   }, []);
 
@@ -364,10 +357,9 @@ const [loading, setLoading] = useState(true);
 
 
   // ── Derived role flags ─────────────────────────────────────────────────────
-  // These are the single source of truth for role-based rendering in the
-  // navbar and "/" redirect. Never derived from URL — always from Firestore.
   const isPrincipal = userProfile?.role === 'principal';
   const isTeacher = userProfile?.role === 'teacher';
+  const isParent = userProfile?.role === 'parent';
   const isStudent = userProfile?.role === 'student' || (!!studentInfo && !userProfile);
 
   // SchoolProvider context
@@ -406,6 +398,7 @@ const [loading, setLoading] = useState(true);
     { to: '/results', label: 'My Results', icon: BarChart3, show: isStudent },
     { to: '/teacher-dashboard', label: 'Teacher', icon: School, show: isTeacher },
     { to: '/principal-dashboard', label: 'Dashboard', icon: LayoutDashboard, show: isPrincipal },
+    { to: '/parent-dashboard', label: 'Parent Portal', icon: HeartHandshake, show: isParent },
     { to: '/exam-rules', label: 'Rules', icon: FileText, show: true },
   ];
 
@@ -415,11 +408,7 @@ const [loading, setLoading] = useState(true);
     <SchoolProvider schoolId={schoolId}>
       <div className="min-h-screen bg-gray-50 dark:bg-gray-900 transition-colors duration-300">
 
-        {/* ── App-level navbar ──────────────────────────────────────────────
-            Shown on all inner pages (/exam, /results, dashboards etc.)
-            NOT shown on the landing page (/) — PasswordPage has its own
-            LandingNavbar. We check the route to avoid double-navbars.
-        ─────────────────────────────────────────────────────────────────── */}
+        {/* ── App-level navbar ────────────────────────────────────────────── */}
         {location.pathname !== '/' && (
           <header className="fixed top-0 left-0 right-0 z-50 backdrop-blur-xl
                              bg-white/70 dark:bg-gray-900/70
@@ -511,47 +500,35 @@ const [loading, setLoading] = useState(true);
           <Routes>
 
             {/* ── Landing page ─────────────────────────────────────────── */}
-            {/*
-             * The "/" route MUST wait for loading to resolve before deciding
-             * where to redirect. Without this:
-             *   - Firebase Auth fires with null user (resolving)
-             *   - PasswordPage renders briefly
-             *   - Profile loads, isTeacher becomes true
-             *   - App redirects → flash of wrong content
-             *
-             * With loading guard: spinner shows, then direct redirect once
-             * the role is confirmed.
-             *
-             * New: userProfile is passed so PasswordPage's LandingNavbar
-             * can show the ProfileChip for already-signed-in users.
-             */}
-         <Route
-  path="/"
-  element={
-    loading ? (
-      <LoadingSpinner />
-    ) : isPrincipal ? (
-      <Navigate to="/principal-dashboard" replace />
+            <Route
+              path="/"
+              element={
+                loading ? (
+                  <LoadingSpinner />
+                ) : isPrincipal ? (
+                  <Navigate to="/principal-dashboard" replace />
 
-    ) : isTeacher ? (
-      // Check approvalStatus field — NOT approved boolean
-      userProfile?.approvalStatus === 'declined'
-        ? <Navigate to="/pending-approval" replace />
-        : <Navigate to="/teacher-dashboard" replace />
+                ) : isTeacher ? (
+                  userProfile?.approvalStatus === 'declined'
+                    ? <Navigate to="/pending-approval" replace />
+                    : <Navigate to="/teacher-dashboard" replace />
 
-    ) : (isStudent || studentInfo) ? (
-      userProfile?.approvalStatus === 'declined'
-        ? <Navigate to="/pending-approval" replace />
-        : <Navigate to="/exam" replace />
+                ) : isParent ? (
+                  <Navigate to="/parent-dashboard" replace />
 
-    ) : (
-      <PasswordPage
-        setStudentInfo={setStudentInfo}
-        userProfile={userProfile}
-      />
-    )
-  }
-/>
+                ) : (isStudent || studentInfo) ? (
+                  userProfile?.approvalStatus === 'declined'
+                    ? <Navigate to="/pending-approval" replace />
+                    : <Navigate to="/exam" replace />
+
+                ) : (
+                  <PasswordPage
+                    setStudentInfo={setStudentInfo}
+                    userProfile={userProfile}
+                  />
+                )
+              }
+            />
 
 
             {/* ── Student: take exam ──────────────────────────────────── */}
@@ -633,11 +610,7 @@ const [loading, setLoading] = useState(true);
             <Route path="/payment/success" element={<PaymentSuccess />} />
             <Route path="/payment/cancel" element={<PaymentCancel />} />
 
-            {/* ── Teacher dashboard ─────────────────────────────────────
-             * RequireRole enforces role="teacher".
-             * A student who navigates here manually is immediately sent to /exam.
-             * A principal is sent to /principal-dashboard.
-             ─────────────────────────────────────────────────────────── */}
+            {/* ── Teacher dashboard ───────────────────────────────────── */}
             <Route
               path="/teacher-dashboard"
               element={
@@ -648,6 +621,21 @@ const [loading, setLoading] = useState(true);
                   role="teacher"
                 >
                   <TeacherDashboard teacherProfile={userProfile} />
+                </RequireRole>
+              }
+            />
+
+            {/* ── Parent: main dashboard ───────────────────────────────── */}
+            <Route
+              path="/parent-dashboard"
+              element={
+                <RequireRole
+                  user={user}
+                  loading={loading}
+                  userProfile={userProfile}
+                  role="parent"
+                >
+                  <ParentDashboard parent={userProfile} />
                 </RequireRole>
               }
             />
@@ -686,24 +674,23 @@ const [loading, setLoading] = useState(true);
             />
 
             {/* ── Pending Approval Route ───────────────────────────── */}
-<Route
-  path="/pending-approval"
-  element={
-    loading ? (
-      <LoadingSpinner />
-    ) : !user ? (
-      <Navigate to="/" replace />
-    ) : userProfile?.approvalStatus === 'approved' ? (
-      // Principal approved them while on this screen — send to dashboard
-      <Navigate
-        to={userProfile.role === 'teacher' ? '/teacher-dashboard' : '/exam'}
-        replace
-      />
-    ) : (
-      <PendingApprovalPage userProfile={userProfile} />
-    )
-  }
-/>
+            <Route
+              path="/pending-approval"
+              element={
+                loading ? (
+                  <LoadingSpinner />
+                ) : !user ? (
+                  <Navigate to="/" replace />
+                ) : userProfile?.approvalStatus === 'approved' ? (
+                  <Navigate
+                    to={userProfile.role === 'teacher' ? '/teacher-dashboard' : '/exam'}
+                    replace
+                  />
+                ) : (
+                  <PendingApprovalPage userProfile={userProfile} />
+                )
+              }
+            />
 
             {/* ── Privacy policy ──────────────────────────────────── */}
             <Route path="/privacy" element={<PrivacyPolicy />} />

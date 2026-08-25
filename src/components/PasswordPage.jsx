@@ -425,6 +425,7 @@ export default function PasswordPage({ setStudentInfo, userProfile }) {
     if (!profile) return;
     if (profile.role === 'teacher') return navigate('/teacher-dashboard');
     if (profile.role === 'principal') return navigate('/principal-dashboard');
+    if (profile.role === 'parent') return navigate('/parent-dashboard');
     // Students handled by routeExistingUser → /exam
   };
 
@@ -444,6 +445,7 @@ export default function PasswordPage({ setStudentInfo, userProfile }) {
       const dashboardUrls = {
         principal: `${window.location.origin}/principal-dashboard`,
         teacher: `${window.location.origin}/teacher-dashboard`,
+        parent: `${window.location.origin}/parent-dashboard`,
         student: `${window.location.origin}/exam`,
       };
 
@@ -454,7 +456,9 @@ export default function PasswordPage({ setStudentInfo, userProfile }) {
       );
 
       // Notify principal (fire and forget) — teachers and students only
-      notifyPrincipal(profile);
+      if (profile.role === 'teacher' || profile.role === 'student') {
+        notifyPrincipal(profile);
+      }
 
       if (profile.role === 'principal') {
         // Principals are auto-approved — go straight to dashboard
@@ -475,9 +479,27 @@ export default function PasswordPage({ setStudentInfo, userProfile }) {
         });
         window.location.href = '/principal-dashboard';
 
+      } else if (profile.role === 'parent') {
+        // Parents are auto-approved — go straight to parent dashboard
+        await Swal.fire({
+          icon: 'success',
+          title: 'Welcome to Eduket Parent Portal! 👨‍👩‍👧',
+          html: `
+            <p style="margin-bottom:8px">
+              Your parent account has been created successfully.
+            </p>
+            <p style="font-size:13px;color:#6b7280">
+              📧 A welcome email has been sent to<br/>
+              <strong>${profile.email}</strong>
+            </p>
+          `,
+          confirmButtonText: 'Go to Parent Dashboard',
+          confirmButtonColor: '#d97706',
+        });
+        window.location.href = '/parent-dashboard';
+
       } else {
         // Teachers and students must wait for principal approval
-        // Do NOT set studentInfo or localStorage — only after approval
         await Swal.fire({
           icon: 'success',
           title: 'Registration Complete! ✅',
@@ -506,6 +528,7 @@ export default function PasswordPage({ setStudentInfo, userProfile }) {
     if (!userProfile) { setModalOpen(true); return; }
     if (userProfile.role === 'teacher') return navigate('/teacher-dashboard');
     if (userProfile.role === 'principal') return navigate('/principal-dashboard');
+    if (userProfile.role === 'parent') return navigate('/parent-dashboard');
     navigate('/exam');
   };
 

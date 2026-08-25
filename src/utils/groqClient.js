@@ -20,7 +20,7 @@ export async function callGroq(prompt) {
                     content: prompt,
                 },
             ],
-            model: "llama-3.3-70b-versatile", // Use a high-quality model for JSON parsing
+            model: "openai/gpt-oss-120b", // Use a high-quality model for JSON parsing
             temperature: 0.1, // Low temperature for consistent JSON output
         });
 

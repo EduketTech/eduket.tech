@@ -18,12 +18,14 @@ const ROLE_LABELS = {
     teacher: 'Teacher',
     student: 'Student',
     principal: 'Principal',
+    parent: 'Parent',
 };
 
 const ROLE_COLORS = {
     teacher: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
     student: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
     principal: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300',
+    parent: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
 };
 
 function Avatar({ profile, size = 'md' }) {
@@ -64,6 +66,7 @@ export function ProfileChip({ profile, onSignOut, onDashboard }) {
     const name = profile?.displayName || profile?.name || profile?.email?.split('@')[0] || 'User';
     const roleLabel = ROLE_LABELS[role] || 'User';
     const roleColor = ROLE_COLORS[role] || ROLE_COLORS.student;
+    const schoolName = profile?.schoolName || profile?.school;
 
     return (
         <div className="relative z-50" ref={ref}>
@@ -108,14 +111,14 @@ export function ProfileChip({ profile, onSignOut, onDashboard }) {
                         </div>
                     </div>
 
-                    {/* School */}
-                    {(profile?.schoolName || profile?.school) && (
+                    {/* Institution (Only shown if available) */}
+                    {schoolName && (
                         <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800">
                             <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-0.5">
                                 Institution
                             </p>
-                            <p className="text-xs font-bold text-slate-600 dark:text-slate-300">
-                                {profile?.schoolName || profile?.school}
+                            <p className="text-xs font-bold text-slate-600 dark:text-slate-300 truncate">
+                                {schoolName}
                             </p>
                         </div>
                     )}

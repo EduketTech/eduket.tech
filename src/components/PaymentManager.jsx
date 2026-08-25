@@ -1,21 +1,28 @@
 import React, { useState, useEffect } from 'react';
 import { DISCOUNTS, FREE_STUDENT_BASE, FREE_TEACHER_BASE, isFreeTrialBaseline } from '../utils/tierConfig';
 import { fetchPriceQuote, initiatePayment, formatCurrency } from '../services/billingApi';
-import { X, Loader2, AlertTriangle, ShieldCheck, Check, GraduationCap, Users, UploadCloud, CreditCard } from 'lucide-react';
+import { X, Loader2, AlertTriangle, ShieldCheck, Check, GraduationCap, Users, UploadCloud, CreditCard, HeartHandshake } from 'lucide-react';
 
 const PAYFAST_URL = "https://www.payfast.co.za/eng/process";
 
+// Preset static prices for parent plans (Fallback if API quote endpoint isn't used)
+const PARENT_PRICING = {
+    monthly: 129,
+    annual: 1290,
+};
+
 // ─── PAYMENT FORM & CHECKOUT BREAKDOWN COMPONENT ─────────────────────────────
-function CustomPaymentForm({ billingCycle, schoolId, schoolName, schoolData = {}, onClose }) {
+function CustomPaymentForm({ type = 'school', billingCycle, schoolId, schoolName, schoolData = {}, onClose }) {
     const [step, setStep] = useState('confirm'); // 'confirm' | 'paying' | 'error'
     const [quote, setQuote] = useState(null);
     const [quoteLoading, setQuoteLoading] = useState(true);
     const [quoteError, setQuoteError] = useState(null);
 
+    const isParent = type === 'parent';
     const studentCount = schoolData?.studentCount ?? schoolData?.studentLimit ?? FREE_STUDENT_BASE;
     const teacherCount = schoolData?.teacherCount ?? schoolData?.teacherLimit ?? FREE_TEACHER_BASE;
     const additionalExamPacks = schoolData?.additionalExamPacks || 0;
-    const isBaseline = isFreeTrialBaseline(studentCount, teacherCount);
+    const isBaseline = !isParent && isFreeTrialBaseline(studentCount, teacherCount);
 
     // Load price quote safely on mount & when dependency props update
     useEffect(() => {
@@ -26,7 +33,24 @@ function CustomPaymentForm({ billingCycle, schoolId, schoolName, schoolData = {}
             setQuoteError(null);
 
             try {
-                // Fetch quote directly using student and teacher numbers
+                // If it's a parent subscription, calculate using local rates or dedicated backend payload
+                if (isParent) {
+                    const price = PARENT_PRICING[billingCycle] || PARENT_PRICING.monthly;
+                    if (active) {
+                        setQuote({
+                            chargeAmount: price,
+                            chargeCurrency: 'ZAR',
+                            subtotalBeforeDiscount: price,
+                            discountApplied: 0,
+                            addonExamPacksCost: 0,
+                            monthlyEquivalent: billingCycle === 'annual' ? Math.round(price / 12) : price,
+                        });
+                        setQuoteLoading(false);
+                    }
+                    return;
+                }
+
+                // Fetch quote directly for School Subscriptions
                 const apiResponse = await fetchPriceQuote({
                     students: studentCount,
                     teachers: teacherCount,
@@ -65,7 +89,7 @@ function CustomPaymentForm({ billingCycle, schoolId, schoolName, schoolData = {}
 
         loadQuote();
         return () => { active = false; };
-    }, [schoolId, studentCount, teacherCount, billingCycle, additionalExamPacks]);
+    }, [isParent, schoolId, studentCount, teacherCount, billingCycle, additionalExamPacks]);
 
     const handlePayfastPayment = async (e) => {
         e.preventDefault();
@@ -73,11 +97,13 @@ function CustomPaymentForm({ billingCycle, schoolId, schoolName, schoolData = {}
         setStep('paying');
 
         try {
+            // Initiate payment with backend API (Pass plan type: 'parent' | 'school')
             const { paymentData } = await initiatePayment({
-                students: quote.studentSeats,
-                teachers: quote.teacherSeats,
+                type,
                 billingCycle,
-                additionalExamPacks,
+                ...(isParent
+                    ? { plan: 'parent_access' }
+                    : { students: quote.studentSeats, teachers: quote.teacherSeats, additionalExamPacks }),
             });
 
             // Construct form to submit POST parameters to PayFast
@@ -107,7 +133,7 @@ function CustomPaymentForm({ billingCycle, schoolId, schoolName, schoolData = {}
             {/* Security Notice Header */}
             <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800">
                 <span className="text-xs font-bold text-slate-500">
-                    School: <strong className="text-slate-800 dark:text-white">{schoolName || 'Custom Subscription'}</strong>
+                    {isParent ? 'Account:' : 'School:'} <strong className="text-slate-800 dark:text-white">{schoolName || (isParent ? 'Parent Account' : 'Custom Subscription')}</strong>
                 </span>
                 <div className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 dark:text-emerald-400 px-3 py-1 rounded-full">
                     <ShieldCheck size={13} /> Secure PayFast Gateway
@@ -119,9 +145,11 @@ function CustomPaymentForm({ billingCycle, schoolId, schoolName, schoolData = {}
                 <div className="flex items-start justify-between gap-4">
                     <div>
                         <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">Subscription Summary</span>
-                        <h3 className="text-xl font-black text-slate-800 dark:text-white mt-0.5">Custom Capacity Package</h3>
+                        <h3 className="text-xl font-black text-slate-800 dark:text-white mt-0.5">
+                            {isParent ? 'Parent Portal Access' : 'Custom Capacity Package'}
+                        </h3>
                         <p className="text-xs text-slate-500 dark:text-slate-400 capitalize mt-0.5">
-                            {billingCycle} billing cycle ({studentCount} Students, {teacherCount} Teachers)
+                            {billingCycle} billing cycle {isParent ? '(All Learner Profiles)' : `(${studentCount} Students, ${teacherCount} Teachers)`}
                         </p>
                     </div>
 
@@ -142,19 +170,6 @@ function CustomPaymentForm({ billingCycle, schoolId, schoolName, schoolData = {}
                             </div>
                         ) : (
                             <div>
-                                <p className="text-[11px] text-slate-400">
-                                    Base subtotal: {formatCurrency(quote.subtotalBeforeDiscount, 'ZAR')}
-                                </p>
-                                {quote.discountApplied > 0 && (
-                                    <p className="text-[11px] text-emerald-600 dark:text-emerald-400">
-                                        − {formatCurrency(quote.discountApplied, 'ZAR')} ({(DISCOUNTS[billingCycle] ?? 0) * 100}% discount)
-                                    </p>
-                                )}
-                                {quote.addonExamPacksCost > 0 && (
-                                    <p className="text-[11px] text-slate-400">
-                                        + {formatCurrency(quote.addonExamPacksCost, 'ZAR')} exam add-ons
-                                    </p>
-                                )}
                                 <p className="text-2xl font-black text-slate-800 dark:text-white mt-1">
                                     {formatCurrency(quote.chargeAmount, quote.chargeCurrency)}
                                 </p>
@@ -166,20 +181,39 @@ function CustomPaymentForm({ billingCycle, schoolId, schoolName, schoolData = {}
                     </div>
                 </div>
 
-                {/* Seat Quota Details */}
+                {/* Details Row */}
                 <div className="mt-4 pt-4 border-t border-slate-200/60 dark:border-slate-700/60 grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
-                        <Users size={15} className="text-indigo-500 shrink-0" />
-                        <span><strong>{teacherCount}</strong> Teacher Seats</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
-                        <GraduationCap size={15} className="text-indigo-500 shrink-0" />
-                        <span><strong>{studentCount}</strong> Student Seats</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
-                        <UploadCloud size={15} className="text-emerald-500 shrink-0" />
-                        <span>Dynamic AI Upload Quota</span>
-                    </div>
+                    {isParent ? (
+                        <>
+                            <div className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
+                                <HeartHandshake size={15} className="text-indigo-500 shrink-0" />
+                                <span>Live Exam & Test Analytics</span>
+                            </div>
+                            <div className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
+                                <Users size={15} className="text-indigo-500 shrink-0" />
+                                <span>All Linked Children Profiles</span>
+                            </div>
+                            <div className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
+                                <UploadCloud size={15} className="text-emerald-500 shrink-0" />
+                                <span>AI Performance Summaries</span>
+                            </div>
+                        </>
+                    ) : (
+                        <>
+                            <div className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
+                                <Users size={15} className="text-indigo-500 shrink-0" />
+                                <span><strong>{teacherCount}</strong> Teacher Seats</span>
+                            </div>
+                            <div className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
+                                <GraduationCap size={15} className="text-indigo-500 shrink-0" />
+                                <span><strong>{studentCount}</strong> Student Seats</span>
+                            </div>
+                            <div className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300">
+                                <UploadCloud size={15} className="text-emerald-500 shrink-0" />
+                                <span>Dynamic AI Upload Quota</span>
+                            </div>
+                        </>
+                    )}
                 </div>
             </div>
 
@@ -239,8 +273,9 @@ function CustomPaymentForm({ billingCycle, schoolId, schoolName, schoolData = {}
 }
 
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
-export default function PaymentManager({ schoolId, schoolName, onClose, schoolData = {} }) {
+export default function PaymentManager({ type = 'school', schoolId, schoolName, onClose, schoolData = {} }) {
     const [billingCycle, setBillingCycle] = useState('annual');
+    const isParent = type === 'parent';
 
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-md">
@@ -249,12 +284,16 @@ export default function PaymentManager({ schoolId, schoolName, onClose, schoolDa
                 {/* Modal Header */}
                 <div className="px-8 py-6 bg-gradient-to-r from-violet-600 to-indigo-600 flex justify-between items-center shrink-0">
                     <div>
-                        <h2 className="text-2xl font-black text-white">Subscription Billing</h2>
-                        <p className="text-xs text-violet-100 font-medium mt-0.5">{schoolName || 'School Management'}</p>
+                        <h2 className="text-2xl font-black text-white">
+                            {isParent ? 'Parent Portal Subscription' : 'Subscription Billing'}
+                        </h2>
+                        <p className="text-xs text-violet-100 font-medium mt-0.5">
+                            {isParent ? 'Unlock full learner progress and performance reports' : (schoolName || 'School Management')}
+                        </p>
                     </div>
                     <button
                         onClick={onClose}
-                        className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors"
+                        className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-colors cursor-pointer"
                         aria-label="Close modal"
                     >
                         <X size={18} />
@@ -275,23 +314,26 @@ export default function PaymentManager({ schoolId, schoolName, onClose, schoolDa
                             >
                                 Monthly
                             </button>
-                            <button
-                                onClick={() => setBillingCycle('quarterly')}
-                                className={`px-4 py-1.5 text-xs font-black rounded-lg transition-all ${billingCycle === 'quarterly' ? 'bg-white dark:bg-slate-700 text-slate-800 dark:text-white shadow-sm' : 'text-slate-500'}`}
-                            >
-                                Quarterly <span className="text-[10px] text-emerald-500 font-extrabold ml-1">-5%</span>
-                            </button>
+                            {!isParent && (
+                                <button
+                                    onClick={() => setBillingCycle('quarterly')}
+                                    className={`px-4 py-1.5 text-xs font-black rounded-lg transition-all ${billingCycle === 'quarterly' ? 'bg-white dark:bg-slate-700 text-slate-800 dark:text-white shadow-sm' : 'text-slate-500'}`}
+                                >
+                                    Quarterly <span className="text-[10px] text-emerald-500 font-extrabold ml-1">-5%</span>
+                                </button>
+                            )}
                             <button
                                 onClick={() => setBillingCycle('annual')}
                                 className={`px-4 py-1.5 text-xs font-black rounded-lg transition-all ${billingCycle === 'annual' ? 'bg-white dark:bg-slate-700 text-slate-800 dark:text-white shadow-sm' : 'text-slate-500'}`}
                             >
-                                Annual <span className="text-[10px] text-emerald-500 font-extrabold ml-1">-10%</span>
+                                Annual <span className="text-[10px] text-emerald-500 font-extrabold ml-1">{isParent ? 'Save 2 Months' : '-10%'}</span>
                             </button>
                         </div>
                     </div>
 
                     {/* Dynamic Payment & Quote Form */}
                     <CustomPaymentForm
+                        type={type}
                         billingCycle={billingCycle}
                         schoolId={schoolId}
                         schoolName={schoolName}
