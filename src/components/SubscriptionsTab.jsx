@@ -24,10 +24,9 @@ export function SubscriptionsTab({ access, user }) {
     const isTrialActive = access?.state === 'trial';
     const isExpired = access?.state === 'expired';
 
-    // trialEnd is now attached on every branch of computeAccess(), including
+    // trialEnd is attached on every branch of computeAccess(), including
     // 'expired', so the countdown always has a stable value to read.
-    // ISO 8601 string with time & timezone
-    const expiryDate = useMemo(() => new Date("2026-08-30T23:59:59Z"), []);
+    const expiryDate = access?.trialEnd || null;
 
     // Countdown Timer Hook — purely cosmetic ticking display; does not
     // drive isSubscribed / isTrialActive / isExpired above.

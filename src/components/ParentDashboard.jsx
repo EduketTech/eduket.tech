@@ -298,11 +298,84 @@ function AccessGate({ access, primary, onGoToSubscriptions }) {
    Overview tab
    ════════════════════════════════════════════════════════════════════════ */
 
-function OverviewTab({ child, subjectStats, insight, insightLoading, onRefreshInsight, primary }) {
+function OverviewTab({ child, subjectStats = [], attempts = [], insight, insightLoading, onRefreshInsight, primary, PASS_MARK = 50 }) {
+    // 1. Live Aggregate Metrics
     const written = subjectStats.reduce((n, s) => n + s.written, 0);
     const scored = subjectStats.filter((s) => s.written > 0);
-    const overallAvg = mean(scored.map((s) => s.avg));
+    const overallAvg = scored.length ? mean(scored.map((s) => s.avg)) : 0;
     const overallPass = scored.length ? mean(scored.map((s) => s.passRate)) : 0;
+
+    // 2. Direct On-Display Analytics Engine
+    const computedInsights = useMemo(() => {
+        if (!scored.length) {
+            return {
+                summary: "No assessment data available to perform analysis yet.",
+                strengths: [],
+                concerns: [],
+                homeSupport: [],
+                teacherSupport: [],
+                trend: "neutral"
+            };
+        }
+
+        // Categorize subjects directly from displayed subjectStats
+        const sorted = [...scored].sort((a, b) => b.avg - a.avg);
+        const topSubjects = sorted.filter(s => s.avg >= 75);
+        const weakSubjects = sorted.filter(s => s.avg < 60);
+
+        // Analyze recent trajectory if attempts are passed
+        let trend = "neutral";
+        if (attempts.length >= 2) {
+            const sortedAttempts = [...attempts].sort((a, b) => (toDate(b.submittedAt)?.getTime() || 0) - (toDate(a.submittedAt)?.getTime() || 0));
+            const recent = scoreOf(sortedAttempts[0]);
+            const previous = scoreOf(sortedAttempts[1]);
+            if (recent - previous >= 5) trend = "up";
+            else if (previous - recent >= 5) trend = "down";
+        }
+
+        // Dynamic Strengths
+        const strengths = topSubjects.map(s => `${s.subject}: High mastery (${round(s.avg)}% average across ${s.written} assessment${s.written > 1 ? 's' : ''})`);
+        if (strengths.length === 0 && sorted.length > 0) {
+            const top = sorted[0];
+            strengths.push(`${top.subject}: Highest performing subject currently at ${round(top.avg)}%`);
+        }
+
+        // Dynamic Concerns
+        const concerns = weakSubjects.map(s => `${s.subject}: Currently struggling (${round(s.avg)}% average, pass rate ${round(s.passRate)}%)`);
+
+        // Actionable Recommendations based on display performance
+        const homeSupport = weakSubjects.map(s => `Dedicate extra revision time to fundamental concepts in ${s.subject}.`);
+        if (homeSupport.length === 0) {
+            homeSupport.push("Maintain regular review habits to keep up consistency across all active subjects.");
+        }
+
+        const teacherSupport = weakSubjects.map(s => `Request targeted feedback or additional practice exercises for ${s.subject}.`);
+
+        // Executive Summary Statement
+        let summary = `${child?.firstName || 'Child'} maintains an overall average of ${round(overallAvg)}% across ${scored.length} active subject${scored.length > 1 ? 's' : ''}. `;
+        if (weakSubjects.length > 0) {
+            summary += `Attention is recommended in ${weakSubjects.map(s => s.subject).join(', ')} where scores are lagging.`;
+        } else {
+            summary += `Performance remains solid and consistently above threshold targets across all subjects.`;
+        }
+
+        return {
+            summary,
+            strengths,
+            concerns,
+            homeSupport,
+            teacherSupport,
+            trend
+        };
+    }, [scored, attempts, child, overallAvg]);
+
+    // Use dynamic computations with fallback to external insight
+    const displaySummary = insight?.overallSummary || computedInsights.summary;
+    const displayStrengths = insight?.strengths?.length ? insight.strengths : computedInsights.strengths;
+    const displayConcerns = insight?.areasOfConcern?.length ? insight.areasOfConcern : computedInsights.concerns;
+    const displayHomeSupport = insight?.homeSupport?.length ? insight.homeSupport : computedInsights.homeSupport;
+    const displayTeacherSupport = insight?.contactTeacherFor?.length ? insight.contactTeacherFor : computedInsights.teacherSupport;
+    const displayTrend = insight?.overallTrend || computedInsights.trend;
 
     return (
         <>
@@ -313,64 +386,66 @@ function OverviewTab({ child, subjectStats, insight, insightLoading, onRefreshIn
                 <StatCard icon={CheckCircle2} label="Overall pass rate" value={`${round(overallPass)}%`} grad="from-sky-500 to-cyan-500" />
             </div>
 
-            {/* Hero: ring + AI headline */}
+            {/* Hero: ring + Live Performance headline */}
             <div className="bg-white dark:bg-slate-900 rounded-[2rem] border border-slate-100 dark:border-slate-800 p-6 flex flex-col sm:flex-row items-center gap-6">
                 <ScoreRing value={overallAvg} size={110} />
                 <div className="flex-1 text-center sm:text-left">
                     <div className="flex items-center gap-2 justify-center sm:justify-start mb-1">
                         <Sparkles size={14} className="text-violet-500" />
-                        <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">AI performance summary</span>
-                        {insight?.fallback && (
-                            <span className="text-[8px] font-black px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-400">
-                                basic view
+                        <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Performance Analysis</span>
+                        {(!insight || insight?.fallback) && (
+                            <span className="text-[8px] font-black px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400">
+                                live calculated
                             </span>
                         )}
                     </div>
                     <p className="text-sm font-bold text-slate-700 dark:text-slate-200 leading-relaxed">
-                        {insightLoading ? 'Analysing recent results…' : (insight?.overallSummary || 'No data yet.')}
+                        {insightLoading ? 'Analysing recent results…' : displaySummary}
                     </p>
                     <div className="flex items-center gap-2 justify-center sm:justify-start mt-3">
-                        <TrendBadge trend={insight?.overallTrend} />
-                        <button onClick={onRefreshInsight} disabled={insightLoading}
-                            className="flex items-center gap-1 text-[9px] font-black text-slate-400 hover:text-slate-600 disabled:opacity-40">
-                            <RefreshCw size={10} className={insightLoading ? 'animate-spin' : ''} /> Refresh
-                        </button>
+                        <TrendBadge trend={displayTrend} />
+                        {onRefreshInsight && (
+                            <button onClick={onRefreshInsight} disabled={insightLoading}
+                                className="flex items-center gap-1 text-[9px] font-black text-slate-400 hover:text-slate-600 disabled:opacity-40">
+                                <RefreshCw size={10} className={insightLoading ? 'animate-spin' : ''} /> Refresh AI
+                            </button>
+                        )}
                     </div>
                 </div>
             </div>
 
-            {/* Strengths + concerns */}
+            {/* Live Strengths + concerns */}
             <div className="grid sm:grid-cols-2 gap-3">
                 <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 p-4">
                     <p className="text-[9px] font-black text-emerald-600 uppercase tracking-widest mb-2 flex items-center gap-1.5">
                         <CheckCircle2 size={12} /> Strengths
                     </p>
-                    {(insight?.strengths || []).length === 0
+                    {displayStrengths.length === 0
                         ? <p className="text-xs text-slate-400">Nothing to report yet.</p>
-                        : (insight.strengths.map((s, i) => (
+                        : displayStrengths.map((s, i) => (
                             <p key={i} className="text-xs text-slate-600 dark:text-slate-300 py-1">• {s}</p>
-                        )))}
+                        ))}
                 </div>
                 <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 p-4">
                     <p className="text-[9px] font-black text-amber-600 uppercase tracking-widest mb-2 flex items-center gap-1.5">
                         <AlertTriangle size={12} /> Areas of concern
                     </p>
-                    {(insight?.areasOfConcern || []).length === 0
+                    {displayConcerns.length === 0
                         ? <p className="text-xs text-slate-400">No concerns flagged right now.</p>
-                        : (insight.areasOfConcern.map((s, i) => (
+                        : displayConcerns.map((s, i) => (
                             <p key={i} className="text-xs text-slate-600 dark:text-slate-300 py-1">• {s}</p>
-                        )))}
+                        ))}
                 </div>
             </div>
 
-            {/* What to do */}
-            {((insight?.homeSupport?.length || 0) > 0 || (insight?.contactTeacherFor?.length || 0) > 0) && (
+            {/* Actionable items */}
+            {(displayHomeSupport.length > 0 || displayTeacherSupport.length > 0) && (
                 <div className="grid sm:grid-cols-2 gap-3">
                     <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 p-4">
                         <p className="text-[9px] font-black text-indigo-600 uppercase tracking-widest mb-2 flex items-center gap-1.5">
                             <HeartHandshake size={12} /> Support at home
                         </p>
-                        {insight.homeSupport.map((s, i) => (
+                        {displayHomeSupport.map((s, i) => (
                             <p key={i} className="text-xs text-slate-600 dark:text-slate-300 py-1">• {s}</p>
                         ))}
                     </div>
@@ -378,16 +453,16 @@ function OverviewTab({ child, subjectStats, insight, insightLoading, onRefreshIn
                         <p className="text-[9px] font-black text-rose-600 uppercase tracking-widest mb-2 flex items-center gap-1.5">
                             <MessageCircle size={12} /> Worth a word with the teacher
                         </p>
-                        {(insight.contactTeacherFor || []).length === 0
+                        {displayTeacherSupport.length === 0
                             ? <p className="text-xs text-slate-400">No teacher conversations needed right now.</p>
-                            : insight.contactTeacherFor.map((s, i) => (
+                            : displayTeacherSupport.map((s, i) => (
                                 <p key={i} className="text-xs text-slate-600 dark:text-slate-300 py-1">• {s}</p>
                             ))}
                     </div>
                 </div>
             )}
 
-            {/* Per-subject strip */}
+            {/* Per-subject progress strip */}
             <div className="bg-white dark:bg-slate-900 rounded-[2rem] border border-slate-100 dark:border-slate-800 p-5">
                 <h2 className="text-sm font-black text-slate-700 dark:text-white mb-4">Progress by subject</h2>
                 {subjectStats.length === 0
@@ -509,8 +584,7 @@ function SubjectsTab({ subjectStats, insight }) {
 /* ════════════════════════════════════════════════════════════════════════
    Exams tab
    ════════════════════════════════════════════════════════════════════════ */
-
-function ExamsTab({ attempts, subjectStats }) {
+function ExamsTab({ attempts, subjectStats, PASS_MARK = 50, MASTERY_THRESHOLD = 75 }) {
     const [filterSubject, setFilterSubject] = useState('All');
     const [openId, setOpenId] = useState(null);
 
@@ -519,10 +593,40 @@ function ExamsTab({ attempts, subjectStats }) {
         return [...filtered].sort((a, b) => (toDate(b.submittedAt)?.getTime() || 0) - (toDate(a.submittedAt)?.getTime() || 0));
     }, [attempts, filterSubject]);
 
+    // Group question results into concept breakdown matching overall score logic
+    const getConceptBreakdown = (a) => {
+        const results = a.markedResults || [];
+        const map = {};
+
+        results.forEach((r) => {
+            const concept = r.concept || r.topic || r.category || "General Understanding";
+            if (!map[concept]) {
+                map[concept] = { concept, total: 0, earned: 0, count: 0 };
+            }
+
+            const questionTotal = parseFloat(r.marks ?? r.totalMarks ?? 1);
+            let questionEarned = 0;
+
+            if (r.earned !== undefined) questionEarned = parseFloat(r.earned);
+            else if (r.score !== undefined) questionEarned = parseFloat(r.score);
+            else if (r.status === 'correct') questionEarned = questionTotal;
+            else if (r.status === 'partial') questionEarned = questionTotal * 0.5;
+
+            map[concept].total += questionTotal;
+            map[concept].earned += questionEarned;
+            map[concept].count += 1;
+        });
+
+        return Object.values(map).map(c => ({
+            ...c,
+            pct: c.total > 0 ? Math.round((c.earned / c.total) * 100) : 0
+        }));
+    };
+
     return (
         <>
             <div className="flex items-center justify-between flex-wrap gap-3">
-                <h2 className="text-sm font-black text-slate-700 dark:text-white">Exams &amp; assignments</h2>
+                <h2 className="text-sm font-black text-slate-700 dark:text-white">Conceptual Progress & Overview</h2>
                 <select value={filterSubject} onChange={(e) => setFilterSubject(e.target.value)}
                     className="px-2.5 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-700 dark:bg-slate-800 outline-none font-bold text-slate-600 dark:text-slate-200">
                     <option value="All">All subjects</option>
@@ -542,6 +646,8 @@ function ExamsTab({ attempts, subjectStats }) {
                     const c = subjectColor(a.subject);
                     const pct = scoreOf(a);
                     const isOpen = openId === a.id;
+                    const concepts = getConceptBreakdown(a);
+
                     return (
                         <div key={a.id} className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 overflow-hidden">
                             <button onClick={() => setOpenId(isOpen ? null : a.id)}
@@ -555,32 +661,65 @@ function ExamsTab({ attempts, subjectStats }) {
                                         {a.subject} · {fmtDate(toDate(a.submittedAt))}
                                     </p>
                                 </div>
-                                <span className={`text-[9px] font-black px-2 py-0.5 rounded-lg ${pct >= PASS_MARK ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>
-                                    {round(pct)}%
+                                <span className={`text-[9px] font-black px-2 py-0.5 rounded-lg ${pct >= PASS_MARK ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40' : 'bg-rose-50 text-rose-600 dark:bg-rose-950/40'}`}>
+                                    {round(pct)}% Overall
                                 </span>
                                 {isOpen ? <ChevronDown size={13} className="text-slate-400" /> : <ChevronRight size={13} className="text-slate-400" />}
                             </button>
 
                             {isOpen && (
-                                <div className="border-t border-slate-100 dark:border-slate-800 px-4 py-3 space-y-2">
-                                    <p className="text-[9px] font-black text-slate-400 uppercase">
-                                        {(a.markedResults || []).length} question{(a.markedResults || []).length === 1 ? '' : 's'}
-                                    </p>
-                                    {(a.markedResults || []).slice(0, 8).map((r, i) => (
-                                        <div key={i} className="flex items-center justify-between text-xs py-1 border-b border-slate-50 dark:border-slate-800/50 last:border-0">
-                                            <span className="text-slate-600 dark:text-slate-300 truncate flex-1 pr-2">
-                                                Q{r.question_number}
-                                            </span>
-                                            <span className={`text-[9px] font-black ${r.status === 'correct' ? 'text-emerald-600' : r.status === 'partial' ? 'text-amber-600' : 'text-rose-500'}`}>
-                                                {r.status === 'correct' ? 'Correct' : r.status === 'partial' ? 'Partial' : 'Incorrect'}
-                                            </span>
+                                <div className="border-t border-slate-100 dark:border-slate-800 px-4 py-3.5 space-y-3 bg-slate-50/50 dark:bg-slate-900/50">
+                                    {/* Parent Executive Summary */}
+                                    {(a.analysis?.parentSummary || a.teacherNote) && (
+                                        <div className="p-3 rounded-xl bg-indigo-50/50 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/30">
+                                            <p className="text-[10px] font-black text-indigo-600 dark:text-indigo-400 uppercase tracking-wide mb-1">
+                                                Parent Executive Summary
+                                            </p>
+                                            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                                                {a.analysis?.parentSummary || a.teacherNote}
+                                            </p>
                                         </div>
-                                    ))}
-                                    {a.analysis?.parentSummary && (
-                                        <p className="text-xs text-slate-600 dark:text-slate-300 pt-2 border-t border-slate-100 dark:border-slate-800 mt-2">
-                                            {a.analysis.parentSummary}
-                                        </p>
                                     )}
+
+                                    {/* Concept Breakdown Bars */}
+                                    <div>
+                                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-wide mb-2">
+                                            Concept Breakdown
+                                        </p>
+                                        <div className="space-y-2.5">
+                                            {concepts.map((item, i) => {
+                                                const isMastered = item.pct >= MASTERY_THRESHOLD;
+                                                const isDeveloping = item.pct >= PASS_MARK && item.pct < MASTERY_THRESHOLD;
+
+                                                const statusLabel = isMastered ? 'Mastered' : isDeveloping ? 'Developing' : 'Needs Focus';
+                                                const badgeClass = isMastered
+                                                    ? 'text-emerald-600 dark:text-emerald-400'
+                                                    : isDeveloping
+                                                        ? 'text-amber-600 dark:text-amber-400'
+                                                        : 'text-rose-500';
+                                                const barClass = isMastered ? 'bg-emerald-500' : isDeveloping ? 'bg-amber-500' : 'bg-rose-500';
+
+                                                return (
+                                                    <div key={i} className="bg-white dark:bg-slate-800/80 p-2.5 rounded-xl border border-slate-100 dark:border-slate-700/50">
+                                                        <div className="flex items-center justify-between text-xs mb-1.5">
+                                                            <span className="font-bold text-slate-700 dark:text-slate-200">
+                                                                {item.concept}
+                                                            </span>
+                                                            <span className={`font-black text-[10px] ${badgeClass}`}>
+                                                                {statusLabel} ({item.pct}%)
+                                                            </span>
+                                                        </div>
+                                                        <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
+                                                            <div
+                                                                className={`h-full transition-all duration-300 ${barClass}`}
+                                                                style={{ width: `${item.pct}%` }}
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
                                 </div>
                             )}
                         </div>
@@ -590,6 +729,7 @@ function ExamsTab({ attempts, subjectStats }) {
         </>
     );
 }
+
 
 /* ════════════════════════════════════════════════════════════════════════
    Settings tab

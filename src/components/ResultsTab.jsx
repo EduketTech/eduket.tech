@@ -25,26 +25,35 @@ const pctBg = (p) => p >= 70 ? "from-green-500 to-emerald-600" : p >= 50 ? "from
 
 // ── Remark Modal ──────────────────────────────────────────────────────────────
 function RemarkModal({ attempt, onClose, onSave }) {
-    const [step, setStep] = useState("choose"); // "choose" | "ai-loading" | "edit"
-    const [mode, setMode] = useState(null);     // "ai" | "manual"
+    const [step, setStep] = useState("choose");
+    const [mode, setMode] = useState(null);
     const [rows, setRows] = useState(() =>
         JSON.parse(JSON.stringify(attempt.markedResults || []))
     );
     const [teacherNote, setTeacherNote] = useState(attempt.teacherNote || "");
     const [aiError, setAiError] = useState(null);
+    const [saveError, setSaveError] = useState(null);
     const [saving, setSaving] = useState(false);
 
-    // Live computed totals
-    const newScore = rows.reduce((s, r) => s + Math.min(parseFloat(r.earned) || 0, r.marks || 0), 0);
-    const newPct = attempt.total > 0 ? Math.round((newScore / attempt.total) * 100) : 0;
+    // Dynamic fallback for total possible marks
+    const totalPossible = attempt.total || attempt.totalMarks || attempt.maxScore ||
+        rows.reduce((s, r) => s + (parseFloat(r.marks) || 0), 0);
 
-    // ── AI re-mark ────────────────────────────────────────────────────────────
+    // Live computed totals (handles empty inputs cleanly)
+    const newScore = rows.reduce((s, r) => {
+        const val = parseFloat(r.earned);
+        const earned = isNaN(val) ? 0 : val;
+        const max = parseFloat(r.marks) || 0;
+        return s + Math.min(Math.max(0, earned), max);
+    }, 0);
+
+    const newPct = totalPossible > 0 ? Math.round((newScore / totalPossible) * 100) : 0;
+
     const runAiRemark = async () => {
         setStep("ai-loading");
         setAiError(null);
         try {
             const API = import.meta.env.VITE_API_URL;
-
             const res = await fetch(`${API}/remark`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -54,12 +63,17 @@ function RemarkModal({ attempt, onClose, onSave }) {
             if (!res.ok) throw new Error(`Server error: ${res.status}`);
 
             const data = await res.json();
-            const parsed = data.results;
+            const parsed = data.results || [];
 
             setRows(prev => prev.map((r, i) => {
-                const update = parsed.find(p => p.idx === i) ?? parsed[i];
+                const update = parsed.find(p => p.idx === i || p.idx === (i + 1) || p.question_number === r.question_number) ?? parsed[i];
                 if (!update) return r;
-                return { ...r, earned: update.earned, status: update.status, feedback: update.feedback };
+                return {
+                    ...r,
+                    earned: update.earned ?? r.earned,
+                    status: update.status ?? r.status,
+                    feedback: update.feedback ?? r.feedback
+                };
             }));
 
             setMode("ai");
@@ -72,16 +86,21 @@ function RemarkModal({ attempt, onClose, onSave }) {
         }
     };
 
-    // ── Field updaters ────────────────────────────────────────────────────────
     const updateRow = (i, field, value) =>
         setRows(prev => prev.map((r, idx) => idx === i ? { ...r, [field]: value } : r));
 
-    // ── Save to Firestore ─────────────────────────────────────────────────────
     const handleSave = async () => {
         setSaving(true);
+        setSaveError(null);
         try {
+            // Clean up empty string values back to numbers prior to submission
+            const cleanedRows = rows.map(r => ({
+                ...r,
+                earned: parseFloat(r.earned) || 0
+            }));
+
             await onSave({
-                markedResults: rows,
+                markedResults: cleanedRows,
                 score: newScore,
                 percentage: newPct,
                 teacherNote: teacherNote.trim(),
@@ -91,17 +110,15 @@ function RemarkModal({ attempt, onClose, onSave }) {
             onClose();
         } catch (err) {
             console.error("Save failed:", err);
+            setSaveError(err.message || "Failed to save remark. Check database permissions.");
         } finally {
             setSaving(false);
         }
     };
 
-    // ── Render ────────────────────────────────────────────────────────────────
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
             <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col border border-slate-200 dark:border-slate-700 overflow-hidden">
-
-                {/* Modal header */}
                 <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex-shrink-0">
                     <div>
                         <h3 className="font-black text-lg">Remark Attempt</h3>
@@ -114,7 +131,6 @@ function RemarkModal({ attempt, onClose, onSave }) {
                     </button>
                 </div>
 
-                {/* ── STEP 1: Choose mode ── */}
                 {step === "choose" && (
                     <div className="p-8 flex flex-col gap-4">
                         <p className="text-sm text-slate-500 text-center mb-2">
@@ -152,7 +168,6 @@ function RemarkModal({ attempt, onClose, onSave }) {
                     </div>
                 )}
 
-                {/* ── STEP 2: AI loading ── */}
                 {step === "ai-loading" && (
                     <div className="flex-1 flex flex-col items-center justify-center gap-4 p-12">
                         <div className="w-16 h-16 rounded-3xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center shadow-lg animate-pulse">
@@ -165,15 +180,18 @@ function RemarkModal({ attempt, onClose, onSave }) {
                     </div>
                 )}
 
-                {/* ── STEP 3: Edit & review ── */}
                 {step === "edit" && (
                     <>
-                        {/* Scrollable question list */}
                         <div className="flex-1 overflow-y-auto p-5 space-y-3">
-
                             {aiError && (
                                 <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-3 text-xs text-red-600 dark:text-red-300 mb-2">
                                     ⚠️ {aiError}
+                                </div>
+                            )}
+
+                            {saveError && (
+                                <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-xl p-3 text-xs text-red-600 dark:text-red-300 mb-2">
+                                    ⚠️ {saveError}
                                 </div>
                             )}
 
@@ -189,7 +207,6 @@ function RemarkModal({ attempt, onClose, onSave }) {
                                 const maxMarks = r.marks || 0;
                                 return (
                                     <div key={i} className={`border rounded-2xl p-4 ${st.color}`}>
-                                        {/* Question text */}
                                         <div className="flex items-start gap-2 mb-3">
                                             {st.icon}
                                             <div className="flex-1 min-w-0">
@@ -199,15 +216,12 @@ function RemarkModal({ attempt, onClose, onSave }) {
                                             <span className="text-xs text-slate-400 flex-shrink-0">/ {maxMarks} mk{maxMarks !== 1 ? "s" : ""}</span>
                                         </div>
 
-                                        {/* Student answer (read-only) */}
                                         <div className="pl-5 mb-3 text-xs text-slate-500 dark:text-slate-400 italic">
                                             <span className="not-italic font-semibold text-slate-600 dark:text-slate-300">Student: </span>
                                             {r.student_answer || "No answer"}
                                         </div>
 
-                                        {/* Editable controls */}
                                         <div className="pl-5 grid grid-cols-2 gap-3">
-                                            {/* Earned marks */}
                                             <div>
                                                 <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide block mb-1">
                                                     Marks Earned
@@ -218,15 +232,17 @@ function RemarkModal({ attempt, onClose, onSave }) {
                                                         min={0}
                                                         max={maxMarks}
                                                         step={0.5}
-                                                        value={r.earned ?? 0}
-                                                        onChange={e => updateRow(i, "earned", parseFloat(e.target.value) || 0)}
+                                                        value={r.earned ?? ""}
+                                                        onChange={e => {
+                                                            const val = e.target.value;
+                                                            updateRow(i, "earned", val === "" ? "" : parseFloat(val) || 0);
+                                                        }}
                                                         className="w-20 text-sm font-black px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 outline-none focus:ring-2 focus:ring-indigo-400"
                                                     />
                                                     <span className="text-xs text-slate-400">/ {maxMarks}</span>
                                                 </div>
                                             </div>
 
-                                            {/* Status */}
                                             <div>
                                                 <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide block mb-1">
                                                     Status
@@ -242,7 +258,6 @@ function RemarkModal({ attempt, onClose, onSave }) {
                                                 </select>
                                             </div>
 
-                                            {/* Feedback */}
                                             <div className="col-span-2">
                                                 <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide block mb-1">
                                                     Feedback (optional)
@@ -260,7 +275,6 @@ function RemarkModal({ attempt, onClose, onSave }) {
                                 );
                             })}
 
-                            {/* Teacher note */}
                             <div className="mt-2">
                                 <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wide block mb-1">
                                     Overall Teacher Note (shown to student)
@@ -275,16 +289,14 @@ function RemarkModal({ attempt, onClose, onSave }) {
                             </div>
                         </div>
 
-                        {/* Sticky footer */}
                         <div className="flex-shrink-0 border-t border-slate-100 dark:border-slate-800 px-6 py-4 flex items-center justify-between gap-4 bg-white dark:bg-slate-900">
-                            {/* New score preview */}
                             <div className="flex items-center gap-3">
                                 <div className={`w-12 h-12 rounded-2xl bg-gradient-to-br ${pctBg(newPct)} flex flex-col items-center justify-center`}>
                                     <span className="text-white font-black text-base leading-none">{newPct}%</span>
                                 </div>
                                 <div>
                                     <p className="text-xs font-bold text-slate-700 dark:text-slate-200">New Score</p>
-                                    <p className={`text-sm font-black ${pctColor(newPct)}`}>{newScore} / {attempt.total}</p>
+                                    <p className={`text-sm font-black ${pctColor(newPct)}`}>{newScore} / {totalPossible}</p>
                                 </div>
                             </div>
 
