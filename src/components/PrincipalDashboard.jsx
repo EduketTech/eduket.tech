@@ -502,7 +502,7 @@ export default function PrincipalDashboard({ principal }) {
     const [selectedStudent, setSelectedStudent] = useState(null);
     const [selectedExam, setSelectedExam] = useState(null);
     const [auditLog, setAuditLog] = useState([]);
-    const currentCurriculum = principal?.curriculum || 'CAPS';
+    const currentCurriculum = school?.curriculum || 'CAPS';
 
     // ─── COMPLETE RESOLUTION BLOCK ───────────────────────────────────────────────
 

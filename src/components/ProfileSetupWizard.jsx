@@ -248,7 +248,7 @@ function StepDetails({ role, details, onChange, subjects, subjectsLoading, curri
         'English First Additional Language', 'Physical Sciences', 'Life Sciences',
         'Geography', 'History', 'Accounting', 'Business Studies', 'Economics',
         'Computer Applications Technology', 'Information Technology',
-        'Life Orientation', 'Tourism', 'Consumer Studies',
+        'Life Orientation', 'Tourism', 'Consumer Studies', 'Robotics', 'Engineering', 'Mathematics for Machine Learning'
     ];
 
     const subjectList = (subjects && subjects.length > 0) ? subjects : FALLBACK_SUBJECTS;
@@ -701,7 +701,6 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
     const [saving, setSaving] = useState(false);
     const [createdProfile, setCreatedProfile] = useState(null); // Tracks saved profile metadata for StepDone
     const savingRef = useRef(false);
-
     const {
         data: aiSubjects,
         loading: subjectsLoading,
@@ -813,7 +812,8 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
                     const schoolData = schoolSnap.data();
 
                     if (role === 'teacher') {
-                        const maxAllowed = schoolData.teacherLimit ?? schoolData.teacherCount ?? FREE_TEACHER_BASE;
+                        // Check teacherLimit first; if not defined, fall back to the default FREE_TEACHER_BASE
+                        const maxAllowed = schoolData.teacherLimit ?? FREE_TEACHER_BASE;
                         const currentCount = schoolData.teacherCount ?? 0;
 
                         if (currentCount >= maxAllowed) {
@@ -846,15 +846,15 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
                         }, { merge: true });
 
                     } else if (role === 'student') {
-                        const maxAllowed = schoolData.studentLimit ?? schoolData.studentCount ?? FREE_STUDENT_BASE;
+                        // Check studentLimit first; if not defined, fall back to the default FREE_STUDENT_BASE
+                        const maxAllowed = schoolData.studentLimit ?? FREE_STUDENT_BASE;
                         const currentCount = schoolData.studentCount ?? 0;
 
                         if (currentCount >= maxAllowed) {
                             throw new Error(`This school has reached its capacity limit for student seats (${currentCount}/${maxAllowed}).`);
                         }
 
-                        const nextCount = currentCount + 1;
-                        generatedCode = generateStudentCode(schoolData.schoolName || school.name, details.grade, nextCount);
+                        const nextCount = currentCount + 1; generatedCode = generateStudentCode(schoolData.schoolName || school.name, details.grade, nextCount);
 
                         transaction.update(schoolRef, {
                             studentCount: nextCount,
