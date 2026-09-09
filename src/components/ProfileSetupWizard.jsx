@@ -789,17 +789,24 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
             const currentUid = user.uid;
             const displayName = `${details.title ? details.title + ' ' : ''}${details.firstName} ${details.lastName}`.trim();
 
+            // Ensure schoolId exists even if user typed a custom school name
             let schoolId = school.schoolId || '';
             if (role === 'principal' && !schoolId) {
-                schoolId = `${currentUid}_${school.name.replace(/\s+/g, '_').substring(0, 30)}`;
+                schoolId = `${currentUid}_${(school.name || 'school').replace(/\s+/g, '_').substring(0, 30)}`;
+            } else if (!schoolId && school.name) {
+                schoolId = `unlinked_${(school.name).toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
             }
 
             let generatedCode = null;
 
+            // Ensure capacity limits have local fallbacks
+            const DEFAULT_TEACHER_LIMIT = typeof FREE_TEACHER_BASE !== 'undefined' ? FREE_TEACHER_BASE : 10;
+            const DEFAULT_STUDENT_LIMIT = typeof FREE_STUDENT_BASE !== 'undefined' ? FREE_STUDENT_BASE : 100;
+
             // ══════════════════════════════════════════════════════════════════════
-            // TEACHER & STUDENT REGISTRATION (Atomic Transactions)
+            // TEACHER & STUDENT REGISTRATION (Atomic Transactions for Linked Schools)
             // ══════════════════════════════════════════════════════════════════════
-            if ((role === 'teacher' || role === 'student') && schoolId) {
+            if ((role === 'teacher' || role === 'student') && school.schoolId) {
                 const schoolRef = doc(db, 'schools', schoolId);
 
                 await runTransaction(db, async (transaction) => {
@@ -812,8 +819,7 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
                     const schoolData = schoolSnap.data();
 
                     if (role === 'teacher') {
-                        // Check teacherLimit first; if not defined, fall back to the default FREE_TEACHER_BASE
-                        const maxAllowed = schoolData.teacherLimit ?? FREE_TEACHER_BASE;
+                        const maxAllowed = schoolData.teacherLimit ?? DEFAULT_TEACHER_LIMIT;
                         const currentCount = schoolData.teacherCount ?? 0;
 
                         if (currentCount >= maxAllowed) {
@@ -821,7 +827,9 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
                         }
 
                         const nextCount = currentCount + 1;
-                        generatedCode = generateTeacherCode(schoolData.schoolName || school.name, nextCount);
+                        generatedCode = typeof generateTeacherCode === 'function'
+                            ? generateTeacherCode(schoolData.schoolName || school.name, nextCount)
+                            : `TCH-${nextCount}`;
 
                         transaction.update(schoolRef, {
                             teacherCount: nextCount,
@@ -833,28 +841,31 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
                             uid: currentUid,
                             email: email || user.email,
                             displayName,
-                            firstName: details.firstName,
-                            lastName: details.lastName,
+                            firstName: details.firstName || '',
+                            lastName: details.lastName || '',
                             title: details.title || '',
                             schoolId,
                             schoolName: schoolData.schoolName || school.name || '',
                             subjects: details.subjects || [],
                             curriculum: school.curriculum || '',
                             teacherCode: generatedCode,
+                            approvalStatus: 'pending',
                             createdAt: serverTimestamp(),
                             updatedAt: serverTimestamp(),
                         }, { merge: true });
 
                     } else if (role === 'student') {
-                        // Check studentLimit first; if not defined, fall back to the default FREE_STUDENT_BASE
-                        const maxAllowed = schoolData.studentLimit ?? FREE_STUDENT_BASE;
+                        const maxAllowed = schoolData.studentLimit ?? DEFAULT_STUDENT_LIMIT;
                         const currentCount = schoolData.studentCount ?? 0;
 
                         if (currentCount >= maxAllowed) {
                             throw new Error(`This school has reached its capacity limit for student seats (${currentCount}/${maxAllowed}).`);
                         }
 
-                        const nextCount = currentCount + 1; generatedCode = generateStudentCode(schoolData.schoolName || school.name, details.grade, nextCount);
+                        const nextCount = currentCount + 1;
+                        generatedCode = typeof generateStudentCode === 'function'
+                            ? generateStudentCode(schoolData.schoolName || school.name, details.grade, nextCount)
+                            : `STD-${nextCount}`;
 
                         transaction.update(schoolRef, {
                             studentCount: nextCount,
@@ -866,8 +877,8 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
                             uid: currentUid,
                             email: email || user.email,
                             displayName,
-                            firstName: details.firstName,
-                            lastName: details.lastName,
+                            firstName: details.firstName || '',
+                            lastName: details.lastName || '',
                             title: details.title || '',
                             schoolId,
                             schoolName: schoolData.schoolName || school.name || '',
@@ -886,8 +897,8 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
                         displayName,
                         role,
                         schoolId,
-                        ...(role === 'teacher' ? { teacherCode: generatedCode } : {}),
-                        ...(role === 'student' ? { studentCode: generatedCode } : {}),
+                        ...(role === 'teacher' ? { teacherCode: generatedCode, subjects: details.subjects || [] } : {}),
+                        ...(role === 'student' ? { studentCode: generatedCode, grade: details.grade || '' } : {}),
                         updatedAt: serverTimestamp(),
                     }, { merge: true });
 
@@ -908,11 +919,10 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
 
             } else {
                 // ══════════════════════════════════════════════════════════════════════
-                // PRINCIPAL & PARENT REGISTRATION (Batch Writes)
+                // FALLBACK / UNLINKED BATCH WRITES (For custom school entries)
                 // ══════════════════════════════════════════════════════════════════════
                 const batch = writeBatch(db);
 
-                // ✅ Extract children list, with fallback to flat details (childName, childGrade, studentCode)
                 let childrenList = (details.children || [])
                     .filter((c) => c.studentCode || c.childName)
                     .map((c) => ({
@@ -922,7 +932,6 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
                         linkedStudentId: c.linkedStudentId || null,
                     }));
 
-                // Fallback: If details has top-level child fields but no details.children array
                 if (childrenList.length === 0 && (details.childName || details.studentCode)) {
                     childrenList = [{
                         studentCode: details.studentCode || '',
@@ -954,7 +963,7 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
 
                 const roleCollection = `${role}s`;
                 const profileRef = doc(db, roleCollection, currentUid);
-                const userRef = doc(db, 'users', currentUid); // ✅ Reference main users collection
+                const userRef = doc(db, 'users', currentUid);
 
                 const basePayload = {
                     uid: currentUid,
@@ -1010,15 +1019,38 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
                         createdAt: serverTimestamp(),
                     };
 
-                    // ✅ Write to both parents/{uid} AND users/{uid}
                     batch.set(profileRef, parentPayload, { merge: true });
                     batch.set(userRef, parentPayload, { merge: true });
+
+                } else if (role === 'teacher') {
+                    // ✅ Fix: Added Teacher batch fallback for custom/unlinked school entries
+                    const teacherPayload = {
+                        ...basePayload,
+                        subjects: details.subjects || [],
+                        curriculum: school.curriculum || '',
+                        approvalStatus: 'pending',
+                        createdAt: serverTimestamp(),
+                    };
+
+                    batch.set(profileRef, teacherPayload, { merge: true });
+                    batch.set(userRef, teacherPayload, { merge: true });
+
+                } else if (role === 'student') {
+                    // ✅ Fix: Added Student batch fallback for custom/unlinked school entries
+                    const studentPayload = {
+                        ...basePayload,
+                        grade: details.grade || '',
+                        curriculum: school.curriculum || '',
+                        createdAt: serverTimestamp(),
+                    };
+
+                    batch.set(profileRef, studentPayload, { merge: true });
+                    batch.set(userRef, studentPayload, { merge: true });
                 }
 
                 await batch.commit();
             }
 
-            // Save summary state for StepDone display
             const summaryData = {
                 displayName,
                 role,

@@ -9,6 +9,7 @@ import {
     BadgeCheck, User, FileText, Calendar, TrendingUp, TrendingDown
 } from "lucide-react";
 
+
 // ── Status helpers ────────────────────────────────────────────────────────────
 const STATUS = {
     correct: { color: "bg-green-50 border-green-200 dark:bg-green-900/20 dark:border-green-800", icon: <CheckCircle size={14} className="text-green-500" />, pill: "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300" },
@@ -54,10 +55,20 @@ function RemarkModal({ attempt, onClose, onSave }) {
         setAiError(null);
         try {
             const API = import.meta.env.VITE_API_URL;
+            const auth = getAuth()
+            const token = await auth.currentUser.getIdToken();   // or however this component gets the current user elsewhere in your app
+
             const res = await fetch(`${API}/remark`, {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ results: rows }),
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer ${token}`,
+                },
+                body: JSON.stringify({
+                    results: rows,
+                    subject: attempt.subject,
+                    exam_id: attempt.examId,
+                }),
             });
 
             if (!res.ok) throw new Error(`Server error: ${res.status}`);
@@ -556,9 +567,26 @@ function AttemptCard({ attempt, teacherMode, onRemark, displayName }) {
                     )}
 
                     {/* Per-question breakdown */}
+                    {/* Per-question breakdown */}
                     <div className="space-y-2">
                         {(attempt.markedResults || []).map((r, i) => {
                             const st = STATUS[r.status] || STATUS.missing;
+
+                            // correct_answer is only useful for comparison when it's a full
+                            // explanation ("B. Firewall filters network traffic") — a bare
+                            // letter means the backend couldn't look up the option text
+                            // (options missing/malformed at grading time) and just fell back
+                            // to the raw memo value. In that case, and whenever there's no
+                            // memo-derived correct_answer at all (AI-marked without a memo),
+                            // fall back to model_answer — the AI's full written answer, which
+                            // is always populated when the AI graded the question but never
+                            // shown in this view before now.
+                            const hasCorrectAnswer = r.correct_answer && r.correct_answer !== "Not available";
+                            const isBareLetter = hasCorrectAnswer && /^[A-Za-z]$/.test(String(r.correct_answer).trim());
+                            const displayAnswer = hasCorrectAnswer && !isBareLetter
+                                ? r.correct_answer
+                                : (r.model_answer || (hasCorrectAnswer ? r.correct_answer : null));
+
                             return (
                                 <div key={i} className={`border rounded-xl p-3 ${st.color}`}>
                                     <div className="flex items-start justify-between gap-2">
@@ -571,8 +599,8 @@ function AttemptCard({ attempt, teacherMode, onRemark, displayName }) {
                                     </div>
                                     <div className="mt-2 pl-6 space-y-1 text-xs text-slate-600 dark:text-slate-300">
                                         <p><span className="font-semibold">Your answer:</span> {r.student_answer || "No answer"}</p>
-                                        {r.correct_answer && r.correct_answer !== "Not available" && (
-                                            <p><span className="font-semibold">Correct:</span> {r.correct_answer}</p>
+                                        {displayAnswer && (
+                                            <p><span className="font-semibold">Correct:</span> {displayAnswer}</p>
                                         )}
                                         {r.feedback && <p className="italic text-slate-500 dark:text-slate-400">{r.feedback}</p>}
                                     </div>
@@ -702,14 +730,15 @@ export function ResultsTab({ studentId, teacherMode = false }) {
     const [examTitles, setExamTitles] = useState({});
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState("");
-    const [remarkTarget, setRemarkTarget] = useState(null); // attempt being remarked
+    const [remarkTarget, setRemarkTarget] = useState(null);
     const [showReportModal, setShowReportModal] = useState(false);
     const [schoolName, setSchoolName] = useState("");
     const [studentProfile, setStudentProfile] = useState({ name: "", grade: "" });
     const [schoolLogoUrl, setSchoolLogoUrl] = useState("");
-    const [studentNameMap, setStudentNameMap] = useState({}); // uid -> real name, teacher mode
-    const [subjectTeacherMap, setSubjectTeacherMap] = useState({}); // subject -> teacher name
+    const [studentNameMap, setStudentNameMap] = useState({});
+    const [subjectTeacherMap, setSubjectTeacherMap] = useState({});
 
+    // ── 1. Load Subject-to-Teacher Mappings ──────────────────────────────────
     useEffect(() => {
         const auth = getAuth();
         const unsub = onAuthStateChanged(auth, async (user) => {
@@ -726,7 +755,7 @@ export function ResultsTab({ studentId, teacherMode = false }) {
             const map = {};
             for (const d of examsSnap.docs) {
                 const data = d.data();
-                if (!data.subject || map[data.subject]) continue; // one teacher per subject is enough
+                if (!data.subject || map[data.subject]) continue;
                 if (data.teacherName) {
                     map[data.subject] = data.teacherName;
                 } else if (data.teacherId) {
@@ -739,22 +768,51 @@ export function ResultsTab({ studentId, teacherMode = false }) {
         return () => unsub();
     }, []);
 
-    // ── 1. Load entire exam profiles (Mapped correctly by examId) ──
+    // ── 2. Consolidated Live Exam Titles Map Listener ─────────────────────────
     useEffect(() => {
-        const unsub = onSnapshot(collection(db, 'exams'), snap => {
-            const map = {};
-            snap.forEach(d => {
-                const data = d.data();
-                // Use data.examId if it exists, otherwise fall back to d.id
-                const key = data.examId || d.id;
-                map[key] = { id: d.id, ...data };
-            });
-            setExamTitles(map);
+        const auth = getAuth();
+        let unsubExams = () => { };
+
+        const unsubAuth = onAuthStateChanged(auth, async (user) => {
+            if (!user) return;
+
+            const userSnap = await getDoc(doc(db, "users", user.uid)).catch(() => null);
+            const schoolId = userSnap?.exists() ? userSnap.data().schoolId : null;
+            if (!schoolId) {
+                console.warn("ResultsTab: no schoolId on user doc, skipping exams query");
+                return;
+            }
+
+            const q = query(collection(db, "exams"), where("schoolId", "==", schoolId));
+            unsubExams = onSnapshot(
+                q,
+                (snap) => {
+                    const map = {};
+                    snap.docs.forEach((d) => {
+                        const data = d.data();
+                        const examObj = { id: d.id, ...data };
+
+                        // Map by document ID
+                        map[d.id] = examObj;
+
+                        // Map by custom examId field if present
+                        if (data.examId) {
+                            map[data.examId] = examObj;
+                        }
+                    });
+                    setExamTitles(map);
+                },
+                (err) => console.error("ResultsTab [examTitles]:", err)
+            );
         });
-        return () => unsub();
+
+        return () => {
+            unsubExams();
+            unsubAuth();
+        };
     }, []);
 
-    // ── Resolve school name + (student mode) own profile name/grade ────────────
+    // ── 3. Resolve School & Student Profile Info ─────────────────────────────
     useEffect(() => {
         const auth = getAuth();
         const unsub = onAuthStateChanged(auth, async (user) => {
@@ -783,7 +841,7 @@ export function ResultsTab({ studentId, teacherMode = false }) {
         return () => unsub();
     }, [teacherMode]);
 
-    // ── Teacher mode: resolve real names for every studentUid seen in attempts ──
+    // ── 4. Resolve Student Names (Teacher Mode) ──────────────────────────────
     useEffect(() => {
         if (!teacherMode) return;
         const uids = [...new Set(attempts.map(a => a.studentUid).filter(Boolean))];
@@ -799,41 +857,12 @@ export function ResultsTab({ studentId, teacherMode = false }) {
         })();
     }, [attempts, teacherMode]);
 
-    // ── 1. Live exam title map ────────────────────────────────────────────────
+    // ── 5. Live Attempts Query (Clean Deduplication & Sorting) ───────────────
     useEffect(() => {
-        const auth = getAuth();
-        const unsubAuth = onAuthStateChanged(auth, async (user) => {
-            if (!user) return;
-
-            const userSnap = await getDoc(doc(db, "users", user.uid)).catch(() => null);
-            const schoolId = userSnap?.exists() ? userSnap.data().schoolId : null;
-            if (!schoolId) { console.warn("ResultsTab: no schoolId on user doc, skipping exams query"); return; }
-
-            const q = query(collection(db, "exams"), where("schoolId", "==", schoolId));
-            const unsubExams = onSnapshot(
-                q,
-                (snap) => {
-                    const map = {};
-                    snap.docs.forEach(d => { map[d.id] = d.data().title || d.id; });
-                    setExamTitles(map);
-                },
-                (err) => console.error("ResultsTab [examTitles]:", err)
-            );
-
-            // stash for cleanup below
-            unsubAuth._examsUnsub = unsubExams;
-        });
-
-        return () => {
-            unsubAuth._examsUnsub?.();
-            unsubAuth();
-        };
-    }, []);
-
-
-    // ── 2. Live attempts query ────────────────────────────────────────────────
-    useEffect(() => {
-        if (!teacherMode && !studentId) { setLoading(false); return; }
+        if (!teacherMode && !studentId) {
+            setLoading(false);
+            return;
+        }
 
         if (teacherMode) {
             const auth = getAuth();
@@ -842,7 +871,11 @@ export function ResultsTab({ studentId, teacherMode = false }) {
                 if (!user) { setLoading(false); return; }
                 const userSnap = await getDoc(doc(db, "users", user.uid)).catch(() => null);
                 const schoolId = userSnap?.exists() ? userSnap.data().schoolId : null;
-                if (!schoolId) { console.warn("ResultsTab: teacher has no schoolId"); setLoading(false); return; }
+                if (!schoolId) {
+                    console.warn("ResultsTab: teacher has no schoolId");
+                    setLoading(false);
+                    return;
+                }
 
                 const q = query(
                     collection(db, "exam_attempts"),
@@ -851,16 +884,20 @@ export function ResultsTab({ studentId, teacherMode = false }) {
                 );
                 unsubAttempts = onSnapshot(
                     q,
-                    (snap) => { setAttempts(snap.docs.map(d => ({ id: d.id, ...d.data() }))); setLoading(false); },
-                    (err) => { console.error("ResultsTab [attempts]:", err); setLoading(false); }
+                    (snap) => {
+                        setAttempts(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+                        setLoading(false);
+                    },
+                    (err) => {
+                        console.error("ResultsTab [attempts]:", err);
+                        setLoading(false);
+                    }
                 );
             });
             return () => { unsubAttempts(); unsubAuth(); };
         }
 
-        // Student view — merge results from both possible field names,
-        // since attempt documents are written inconsistently as either
-        // `studentId` or `studentUid` depending on which upload flow created them.
+        // Student View: Merge results across both studentId and studentUid fields
         let byIdResults = [];
         let byUidResults = [];
         let idLoaded = false;
@@ -868,14 +905,28 @@ export function ResultsTab({ studentId, teacherMode = false }) {
 
         const mergeAndSet = () => {
             const merged = [...byIdResults, ...byUidResults];
-            const deduped = Array.from(
-                new Map(merged.map(a => [a.id, a])).values()
-            );
+
+            // Deduplicate by attempt document ID so all historical attempts are preserved
+            const dedupedMap = new Map();
+            merged.forEach(attempt => {
+                if (attempt.id) {
+                    dedupedMap.set(attempt.id, attempt);
+                }
+            });
+
+            const deduped = Array.from(dedupedMap.values());
+
+            // Sort attempts descending by completion/submission time
             deduped.sort((a, b) => {
-                const aTime = a.completedAt?.toMillis?.() ?? new Date(a.completedAt || 0).getTime();
-                const bTime = b.completedAt?.toMillis?.() ?? new Date(b.completedAt || 0).getTime();
+                const aTime = a.completedAt?.toMillis?.()
+                    ?? a.submittedAt?.toMillis?.()
+                    ?? new Date(a.completedAt || a.submittedAt || 0).getTime();
+                const bTime = b.completedAt?.toMillis?.()
+                    ?? b.submittedAt?.toMillis?.()
+                    ?? new Date(b.completedAt || b.submittedAt || 0).getTime();
                 return bTime - aTime;
             });
+
             setAttempts(deduped);
             if (idLoaded && uidLoaded) setLoading(false);
         };
@@ -908,13 +959,19 @@ export function ResultsTab({ studentId, teacherMode = false }) {
         };
     }, [studentId, teacherMode]);
 
-    // ── 3. Enrich with resolved title ─────────────────────────────────────────
-    const enriched = attempts.map(a => ({
-        ...a,
-        resolvedTitle: examTitles[a.exam] || a.examTitle || a.exam || "Exam",
-    }));
+    // ── 6. Enrich Attempts with Resolved Titles & Details ────────────────────
+    const enriched = attempts.map(a => {
+        const examKey = a.examId || a.exam;
+        const examMeta = examTitles[examKey] || {};
 
-    // ── 4. Search filter ──────────────────────────────────────────────────────
+        return {
+            ...a,
+            resolvedTitle: examMeta.title || examMeta.examFileName || a.examTitle || a.exam || "Exam",
+            linkedExam: examMeta
+        };
+    });
+
+    // ── 7. Search Filter ─────────────────────────────────────────────────────
     const filtered = enriched.filter(a => {
         if (!searchTerm.trim()) return true;
         const t = searchTerm.toLowerCase();
@@ -922,24 +979,20 @@ export function ResultsTab({ studentId, teacherMode = false }) {
             (teacherMode && a.studentId?.toLowerCase().includes(t));
     });
 
-    // ── 5. Summary stats ─────────────────────────────────────────────────────
+    // ── 8. Calculated Stats ──────────────────────────────────────────────────
     const avgPct = filtered.length ? Math.round(filtered.reduce((s, a) => s + (a.percentage ?? 0), 0) / filtered.length) : 0;
     const best = filtered.length ? Math.max(...filtered.map(a => a.percentage ?? 0)) : 0;
     const passing = filtered.filter(a => (a.percentage ?? 0) >= 50).length;
 
-    // ── 6. Save remark to Firestore ───────────────────────────────────────────
+    // ── 9. Remark Action ─────────────────────────────────────────────────────
     const handleSaveRemark = async (attemptId, updates) => {
         await updateDoc(doc(db, "exam_attempts", attemptId), {
             ...updates,
-            // Firestore Timestamp-safe date
             remarkedAt: updates.remarkedAt,
         });
-        // onSnapshot above will broadcast the change to all listeners
-        // (teacher dashboard + student dashboard) automatically.
     };
 
-    // ── 7. PDF export ─────────────────────────────────────────────────────────
-    // ── Structured period report ──────────────────────────────────────────
+    // ── 10. PDF Export ────────────────────────────────────────────────────────
     const handleDownload = (period, customStart, customEnd, subjects = null) => {
         let periodAttempts = filterByPeriod(enriched, period, customStart, customEnd);
         periodAttempts = filterBySubjects(periodAttempts, subjects);
@@ -958,7 +1011,6 @@ export function ResultsTab({ studentId, teacherMode = false }) {
         const subjectLabel = subjects && subjects.length > 0 ? subjects.join(", ") : "All Subjects";
         const genDate = new Date().toLocaleDateString("en-ZA", { day: "numeric", month: "short", year: "numeric" });
 
-        // ── Aggregate stats ──────────────────────────────────────────────────
         const total = periodAttempts.length;
         const avgPct = Math.round(periodAttempts.reduce((s, a) => s + (a.percentage ?? 0), 0) / total);
         const bestPct = Math.max(...periodAttempts.map(a => a.percentage ?? 0));
@@ -977,7 +1029,6 @@ export function ResultsTab({ studentId, teacherMode = false }) {
             trendLabel = diff > 0 ? `▲ +${diff}%` : diff < 0 ? `▼ ${diff}%` : "No change";
         }
 
-        // Subject breakdown — now with teacher name prefixed
         const bySubject = new Map();
         periodAttempts.forEach(a => {
             const key = a.subject || a.resolvedTitle || a.examTitle || "General";
@@ -994,7 +1045,6 @@ export function ResultsTab({ studentId, teacherMode = false }) {
             })
             .join("");
 
-        // Student breakdown (teacher mode only)
         let studentSection = "";
         if (teacherMode) {
             const byStudent = new Map();
@@ -1018,7 +1068,6 @@ export function ResultsTab({ studentId, teacherMode = false }) {
     </div>`;
         }
 
-        // ── Concept gaps, grouped per subject, with subject teacher noted ───
         const gapsBySubject = new Map();
         periodAttempts.forEach(a => {
             const subjectKey = a.subject || a.resolvedTitle || a.examTitle || "General";
@@ -1049,7 +1098,6 @@ export function ResultsTab({ studentId, teacherMode = false }) {
     </div>`;
             }).join("");
 
-        // Exam-by-exam appendix
         const appendixRows = sorted.map((a, idx) => {
             const d = a.completedAt?.toDate?.()?.toLocaleDateString("en-ZA", { day: "numeric", month: "short", year: "numeric" }) ?? "—";
             const studentLabel = teacherMode ? (studentNameMap[a.studentUid] || a.studentId || "—") : null;
@@ -1145,15 +1193,13 @@ export function ResultsTab({ studentId, teacherMode = false }) {
 
     const availableSubjects = [...new Set(enriched.map(a => a.subject || a.resolvedTitle || a.examTitle || "General"))].sort();
 
-
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── 11. JSX Render ────────────────────────────────────────────────────────
     if (loading) return (
         <div className="p-20 text-center text-slate-400 text-sm animate-pulse">Loading results…</div>
     );
 
     return (
         <>
-            {/* Remark modal — portal-style, conditionally rendered */}
             {teacherMode && remarkTarget && (
                 <RemarkModal
                     attempt={remarkTarget}
@@ -1162,9 +1208,7 @@ export function ResultsTab({ studentId, teacherMode = false }) {
                 />
             )}
 
-
             <div className="bg-white dark:bg-slate-900 rounded-[2rem] shadow-sm p-8 border border-slate-200 dark:border-slate-800 animate-in fade-in">
-
                 {/* Header */}
                 <div className="flex items-start justify-between gap-4 mb-1 flex-wrap">
                     <div>
@@ -1178,13 +1222,15 @@ export function ResultsTab({ studentId, teacherMode = false }) {
                         </p>
                     </div>
 
-                    <button
-                        onClick={() => setShowReportModal(true)}
-                        className="flex items-center gap-2 px-5 py-3 rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm shadow-sm transition-all"
-                    >
-                        <Download size={18} />
-                        Download Report
-                    </button>
+                    <div className="flex items-center gap-3">
+                        <button
+                            onClick={() => setShowReportModal(true)}
+                            className="flex items-center gap-2 px-5 py-3 rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm shadow-sm transition-all"
+                        >
+                            <Download size={18} />
+                            Download Report
+                        </button>
+                    </div>
 
                     {showReportModal && (
                         <ReportPeriodModal
@@ -1196,8 +1242,10 @@ export function ResultsTab({ studentId, teacherMode = false }) {
                             }}
                         />
                     )}
+                </div>
 
-                    {attempts.length > 0 && (
+                {attempts.length > 0 && (
+                    <div className="mt-4 mb-2">
                         <input
                             type="text"
                             placeholder={teacherMode ? "Search student or exam…" : "Search exam…"}
@@ -1205,8 +1253,8 @@ export function ResultsTab({ studentId, teacherMode = false }) {
                             onChange={e => setSearchTerm(e.target.value)}
                             className="text-sm px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-200 placeholder-slate-400 outline-none focus:ring-2 focus:ring-indigo-400 w-56"
                         />
-                    )}
-                </div>
+                    </div>
+                )}
 
                 {filtered.length === 0 ? (
                     <div className="p-20 border-4 border-dashed border-slate-100 dark:border-slate-800 rounded-[2.5rem] text-center mt-8">
@@ -1217,7 +1265,7 @@ export function ResultsTab({ studentId, teacherMode = false }) {
                     </div>
                 ) : (
                     <>
-                        {/* Stats strip */}
+                        {/* Stats Strip */}
                         <div className={`grid gap-4 mb-8 mt-6 ${teacherMode ? "grid-cols-2 md:grid-cols-4" : "grid-cols-3"}`}>
                             {[
                                 { label: teacherMode ? "Total Submissions" : "Exams Taken", value: filtered.length, suffix: "" },
@@ -1232,14 +1280,10 @@ export function ResultsTab({ studentId, teacherMode = false }) {
                             ))}
                         </div>
 
-                        {/* Attempt cards */}
+                        {/* Attempt Cards List */}
                         {filtered.map(a => {
-                            // 1. Resolve matching key (checks both examId and exam fields)
-                            const examIdKey = a.examId || a.exam;
-                            const linkedExam = examTitles[examIdKey] || {};
+                            const linkedExam = a.linkedExam || {};
 
-                            // 2. STAGE FALLBACKS: Check the linked exam first, then the local attempt fields directly
-                            // This guarantees that even if the exams subscription hasn't loaded yet, it shows the details.
                             const rawFileName = linkedExam.examFileName
                                 || a.examFileName
                                 || linkedExam.title
@@ -1247,14 +1291,10 @@ export function ResultsTab({ studentId, teacherMode = false }) {
                                 || a.examTitle
                                 || 'Exam';
 
-                            // Strip out the file extensions cleanly
                             const displayExamName = rawFileName.replace(/\.(pdf|docx|doc|txt|odt)$/i, '');
-
-                            // Direct cross-reference fallback for Subject & Teacher Name
                             const displaySubject = linkedExam.subject || a.subject || 'Home Language';
-                            const displayTeacher = linkedExam.teacherName || a.teacherName || a.teacher || 'Thabo';
+                            const displayTeacher = linkedExam.teacherName || a.teacherName || a.teacher || 'Teacher';
 
-                            // 3. Date formatting logic
                             const ts = a._tsSeconds || a.submittedAt?.seconds || a.completedAt?.seconds;
                             const formattedDateTime = ts
                                 ? new Date(ts * 1000).toLocaleString("en-ZA", {
@@ -1263,7 +1303,6 @@ export function ResultsTab({ studentId, teacherMode = false }) {
                                 })
                                 : '—';
 
-                            // 4. Status Tag styling
                             let statusTag = { text: 'AI-Marked', bg: 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 border-indigo-200/50' };
                             if (a.remarkedByTeacher || a.remarkedAt) {
                                 statusTag = { text: 'Teacher Remarked', bg: 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 border-emerald-200/50' };
@@ -1273,12 +1312,10 @@ export function ResultsTab({ studentId, teacherMode = false }) {
 
                             return (
                                 <div key={a.id} className="space-y-4 mb-6 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 p-5 rounded-2xl shadow-sm">
-
                                     {/* Meta Header */}
                                     <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800 text-xs">
                                         <div className="space-y-1 text-left flex-1 min-w-0">
                                             <div className="flex items-center gap-2 flex-wrap">
-
                                                 <span className="px-2 py-0.5 text-[10px] font-semibold bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 rounded-md">
                                                     {displaySubject}
                                                 </span>
@@ -1298,7 +1335,7 @@ export function ResultsTab({ studentId, teacherMode = false }) {
                                         </div>
                                     </div>
 
-                                    {/* Display the Card with custom title override */}
+                                    {/* Attempt Card Display */}
                                     <AttemptCard
                                         attempt={a}
                                         teacherMode={teacherMode}
@@ -1306,25 +1343,17 @@ export function ResultsTab({ studentId, teacherMode = false }) {
                                     />
 
                                     {/* Actions Footer */}
-                                    <div className="flex items-center gap-2 pt-1">
-                                        {teacherMode && (
+                                    {teacherMode && (
+                                        <div className="flex items-center gap-2 pt-1">
                                             <button
                                                 onClick={() => setRemarkTarget(a)}
                                                 className="px-4 py-2 rounded-xl border border-indigo-200 dark:border-indigo-700 bg-indigo-50 dark:bg-indigo-900/20 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 text-indigo-600 dark:text-indigo-300 text-sm font-semibold flex items-center gap-2 transition-all"
                                             >
                                                 <Pencil size={14} />
-                                                {a.remarkedAt ? "Re-remark" : "Remark"}
+                                                Remark Attempt
                                             </button>
-                                        )}
-
-                                        <button
-                                            onClick={() => handleDownload(a)}
-                                            className="px-4 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-sm font-semibold flex items-center gap-2 transition-all text-slate-700 dark:text-slate-200"
-                                        >
-                                            <Download size={16} />
-                                            Export PDF
-                                        </button>
-                                    </div>
+                                        </div>
+                                    )}
                                 </div>
                             );
                         })}

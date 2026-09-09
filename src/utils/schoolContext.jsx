@@ -64,21 +64,35 @@ export function SchoolProvider({ children, schoolId }) {
             return;
         }
 
-        const unsub = onSnapshot(doc(db, 'schools', schoolId), (snap) => {
-            if (snap.exists()) {
-                const data = snap.data();
-                const merged = {
-                    ...DEFAULT_THEME,
-                    ...data,
-                    schoolId,
-                };
-                setSchool(merged);
-                applyThemeToCss(data.primary || DEFAULT_THEME.primary);
-            }
-            setLoading(false);
-        });
+        setLoading(true);
 
-        return () => unsub();
+        const unsub = onSnapshot(
+            doc(db, 'schools', schoolId),
+            (snap) => {
+                if (snap.exists()) {
+                    const data = snap.data();
+                    const merged = {
+                        ...DEFAULT_THEME,
+                        ...data,
+                        schoolId,
+                    };
+                    setSchool(merged);
+                    applyThemeToCss(data.primary || DEFAULT_THEME.primary);
+                } else {
+                    setSchool({ ...DEFAULT_THEME, schoolId });
+                }
+                setLoading(false);
+            },
+            (error) => {
+                // Prevents unhandled Firestore stream assertions from crashing the app during Vite HMR
+                console.error('[SchoolContext] Firestore Snapshot Error:', error);
+                setLoading(false);
+            }
+        );
+
+        return () => {
+            unsub();
+        };
     }, [schoolId]);
 
     return (

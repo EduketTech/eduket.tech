@@ -72,6 +72,7 @@ function EditExamModal({ exam, onSave, onClose }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
+
   const handleSave = async () => {
     if (!title.trim() || !subject) {
       setError('Title and subject are required.');
@@ -488,8 +489,8 @@ export default function TeacherDashboard() {
   const [paperTitle, setPaperTitle] = useState('');
   const [paperYear, setPaperYear] = useState(new Date().getFullYear().toString());
   const [paperSubject, setPaperSubject] = useState('');
-  const [paperGrade, setPaperGrade] = useState('12');
-  const [curriculum, setCurriculum] = useState('CAPS');
+  const [paperGrade, setPaperGrade] = useState('');
+  const [curriculum, setCurriculum] = useState('');
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState('');
   const [teacherProfile, setTeacherProfile] = useState(null);
@@ -803,7 +804,7 @@ export default function TeacherDashboard() {
             title: paperTitle || "Untitled Assessment",
             subject: paperSubject || teacherSubjects[0] || "",
             schoolId: teacherProfile?.schoolId || '',
-            grade: selectedGrade || "12",
+            grade: paperGrade,
             curriculum: selectedCurriculum,
             examType: currentActiveType,
             examDuration: currentActiveType === 'assignment' ? 0 : (parseInt(examDuration) || 60),
@@ -1180,7 +1181,9 @@ export default function TeacherDashboard() {
                         className="p-5 border-2 dark:bg-slate-800 dark:border-slate-700 rounded-2xl font-bold text-sm outline-none focus:border-indigo-600"
                       >
                         <option value="">Select Subject</option>
-                        {teacherSubjects.map((s) => <option key={s} value={s}>{s}</option>)}
+                        {teacherSubjects.map((s) => (
+                          <option key={s} value={s}>{s}</option>
+                        ))}
                       </select>
                     )}
 
@@ -1226,19 +1229,25 @@ export default function TeacherDashboard() {
                       <select
                         value={paperGrade}
                         onChange={(e) => setPaperGrade(e.target.value)}
-                        disabled={!selectedCurriculum || levelsLoading}
+                        disabled={!(selectedCurriculum || schoolCurricula[0]) || levelsLoading}
                         className="p-5 border-2 bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 rounded-2xl font-bold text-sm outline-none focus:border-indigo-600 dark:focus:border-indigo-500 text-slate-700 dark:text-slate-200 disabled:opacity-50 disabled:bg-slate-50 dark:disabled:bg-slate-900/40 disabled:border-slate-100 dark:disabled:border-slate-800/80 transition-all w-full"
                       >
                         <option value="">
-                          {!selectedCurriculum
+                          {!(selectedCurriculum || schoolCurricula[0])
                             ? 'Select curriculum first'
                             : levelsLoading
                               ? 'Loading levels...'
                               : 'Select Grade / Level'}
                         </option>
-                        {levels.map((lvl) => (
-                          <option key={lvl} value={lvl}>{lvl}</option>
-                        ))}
+                        {levels?.map((lvl) => {
+                          const gradeVal = typeof lvl === 'object' ? lvl.id || lvl.name : lvl;
+                          const gradeLabel = typeof lvl === 'object' ? lvl.name || lvl.label : lvl;
+                          return (
+                            <option key={gradeVal} value={gradeVal}>
+                              {gradeLabel}
+                            </option>
+                          );
+                        })}
                       </select>
                     </div>
                   </div>
@@ -1264,9 +1273,22 @@ export default function TeacherDashboard() {
                   </div>
 
                   <button
-                    onClick={() => setUploadStep(2)}
-                    disabled={!paperTitle.trim() || !paperSubject || !paperGrade}
-                    className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-black py-5 rounded-[2rem] flex items-center justify-center gap-3 transition-all disabled:opacity-30"
+                    onClick={() => {
+                      const activeCurr = selectedCurriculum || schoolCurricula[0];
+                      const activeSubj = paperSubject || teacherSubjects[0];
+
+                      if (!paperTitle.trim() || !activeSubj || !paperGrade || !activeCurr) {
+                        Swal.fire({
+                          icon: 'warning',
+                          title: 'Missing Details',
+                          text: 'Please ensure title, subject, curriculum, and grade are filled in.',
+                        });
+                        return;
+                      }
+
+                      setUploadStep(2);
+                    }}
+                    className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-black py-5 rounded-[2rem] flex items-center justify-center gap-3 transition-all"
                   >
                     CONTINUE <ArrowRight size={20} />
                   </button>
