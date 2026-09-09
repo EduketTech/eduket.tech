@@ -472,6 +472,7 @@ function AttemptCard({ attempt, teacherMode, onRemark, displayName }) {
     const date = attempt.completedAt?.toDate?.()?.toLocaleDateString("en-ZA", {
         day: "numeric", month: "short", year: "numeric",
     }) ?? "—";
+    const [expandedAnswers, setExpandedAnswers] = useState({});
 
     // ── Strip File Extension & Resolve Title ──
     // Uses the passed displayName prop first, fallback to document fields, then strips the file extension
@@ -598,15 +599,133 @@ function AttemptCard({ attempt, teacherMode, onRemark, displayName }) {
                                         <span className="text-xs font-black text-slate-600 dark:text-slate-300 flex-shrink-0">{r.earned}/{r.marks}</span>
                                     </div>
                                     <div className="mt-2 pl-6 space-y-1 text-xs text-slate-600 dark:text-slate-300">
-                                        <p><span className="font-semibold">Your answer:</span> {r.student_answer || "No answer"}</p>
-                                        {displayAnswer && (
-                                            <p><span className="font-semibold">Correct:</span> {displayAnswer}</p>
+                                        <p>
+                                            <span className="font-semibold">Your answer:</span>{" "}
+                                            {r.student_answer || "No answer"}
+                                        </p>
+
+                                        <button
+                                            type="button"
+                                            onClick={() =>
+                                                setExpandedAnswers(prev => ({
+                                                    ...prev,
+                                                    [r.question_number]: !prev[r.question_number]
+                                                }))
+                                            }
+                                            className="text-xs font-semibold text-blue-600 dark:text-blue-400 hover:underline"
+                                        >
+                                            {expandedAnswers[r.question_number]
+                                                ? "Hide answer"
+                                                : "Click to view answer"}
+                                        </button>
+
+                                        {expandedAnswers[r.question_number] && (
+                                            <div className="mt-2 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-3 space-y-2">
+
+                                                {displayAnswer && (
+                                                    <p>
+                                                        <span className="font-semibold text-emerald-600 dark:text-emerald-400">
+                                                            Correct answer:
+                                                        </span>{" "}
+                                                        {displayAnswer}
+                                                    </p>
+                                                )}
+
+                                                {r.feedback && (
+                                                    <div>
+                                                        <p className="font-semibold">Feedback</p>
+                                                        <p className="mt-0.5 text-slate-600 dark:text-slate-300">
+                                                            {r.feedback}
+                                                        </p>
+                                                    </div>
+                                                )}
+
+                                                {r.learning_explanation && (
+                                                    <div>
+                                                        <p className="font-semibold">Explanation</p>
+                                                        <p className="mt-0.5 text-slate-600 dark:text-slate-300">
+                                                            {r.learning_explanation}
+                                                        </p>
+                                                    </div>
+                                                )}
+
+                                                {r.why_correct && (
+                                                    <div>
+                                                        <p className="font-semibold text-emerald-600 dark:text-emerald-400">
+                                                            Why your answer is correct
+                                                        </p>
+                                                        <p className="mt-0.5">
+                                                            {r.why_correct}
+                                                        </p>
+                                                    </div>
+                                                )}
+
+                                                {r.why_student_answer_is_wrong && (
+                                                    <div>
+                                                        <p className="font-semibold text-red-600 dark:text-red-400">
+                                                            Why your answer needs improvement
+                                                        </p>
+                                                        <p className="mt-0.5">
+                                                            {r.why_student_answer_is_wrong}
+                                                        </p>
+                                                    </div>
+                                                )}
+
+                                                {r.step_by_step && (
+                                                    <div>
+                                                        <p className="font-semibold">Step-by-step</p>
+                                                        <p className="mt-0.5 whitespace-pre-line">
+                                                            {r.step_by_step}
+                                                        </p>
+                                                    </div>
+                                                )}
+
+                                                {r.key_learning_point && (
+                                                    <div>
+                                                        <p className="font-semibold">Key learning point</p>
+                                                        <p className="mt-0.5">
+                                                            {r.key_learning_point}
+                                                        </p>
+                                                    </div>
+                                                )}
+
+                                                {r.exam_tip && (
+                                                    <div>
+                                                        <p className="font-semibold">Exam tip</p>
+                                                        <p className="mt-0.5">
+                                                            {r.exam_tip}
+                                                        </p>
+                                                    </div>
+                                                )}
+
+                                                {r.practice_question && (
+                                                    <div>
+                                                        <p className="font-semibold">Try this</p>
+                                                        <p className="mt-0.5">
+                                                            {r.practice_question}
+                                                        </p>
+                                                    </div>
+                                                )}
+
+                                                {r.encouragement && (
+                                                    <p className="pt-1 font-medium text-blue-600 dark:text-blue-400">
+                                                        {r.encouragement}
+                                                    </p>
+                                                )}
+                                            </div>
                                         )}
-                                        {r.feedback && <p className="italic text-slate-500 dark:text-slate-400">{r.feedback}</p>}
                                     </div>
+
                                     <div className="mt-2 pl-6 flex gap-2">
-                                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${st.pill}`}>{r.status}</span>
-                                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-500">{r.type}</span>
+                                        <span
+                                            className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${st.pill}`}
+                                        >
+                                            {r.status}
+                                        </span>
+
+                                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-500">
+                                            {r.type}
+                                        </span>
                                     </div>
                                 </div>
                             );

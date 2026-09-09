@@ -830,6 +830,7 @@ export default function AIExamMocker({ student }) {
   const STUDENT_ID = useStudentId();
   const [studentInfo, setStudentInfo] = useState(null);
   const [messages, setMessages] = useState([]);
+  const [expandedAnswers, setExpandedAnswers] = useState({});
 
 
   useEffect(() => {
@@ -961,47 +962,88 @@ export default function AIExamMocker({ student }) {
 
   // ── Start exam ─────────────────────────────────────────────────────────────
   const startExam = async () => {
-    const token = await auth.currentUser?.getIdToken(true);
+    const user = auth.currentUser;
+
+    if (!user) {
+      alert("Session expired. Please sign in again.");
+      return;
+    }
+
+    const token = await user.getIdToken(true);
+    const uid = user.uid;
+
     if (!selectedExam) return;
+
     setLoading(true);
 
     try {
-      const examId = typeof selectedExam === "string"
-        ? selectedExam
-        : selectedExam?.examId || selectedExam?.id;
+      const examId =
+        typeof selectedExam === "string"
+          ? selectedExam
+          : selectedExam?.examId || selectedExam?.id;
 
-      if (!examId) throw new Error("Invalid exam selected");
+      if (!examId) {
+        throw new Error("Invalid exam selected");
+      }
 
       console.log("[startExam] hitting:", `${API}/start_exam`);
-      console.log("[startExam] payload:", { exam_id: examId, student_id: STUDENT_ID });
+
+      console.log("[startExam] authenticated Firebase UID:", uid);
+
+      console.log("[startExam] payload:", {
+        exam_id: examId
+      });
 
       const res = await fetch(`${API}/start_exam`, {
         method: "POST",
+
         headers: {
           "Content-Type": "application/json",
-          'Authorization': `Bearer ${token}`,
+          "Authorization": `Bearer ${token}`,
         },
-        body: JSON.stringify({ exam_id: examId, student_id: STUDENT_ID }),
+
+        body: JSON.stringify({
+          exam_id: examId
+        }),
       });
 
       console.log("[startExam] status:", res.status, res.ok);
 
       const text = await res.text();
-      console.log("[startExam] raw response:", text.slice(0, 500));
+
+      console.log(
+        "[startExam] raw response:",
+        text.slice(0, 500)
+      );
 
       let data;
+
       try {
         data = JSON.parse(text);
       } catch (e) {
-        throw new Error(`JSON parse failed: ${text.slice(0, 200)}`);
+        throw new Error(
+          `JSON parse failed: ${text.slice(0, 200)}`
+        );
       }
 
-      console.log("[startExam] parsed data keys:", Object.keys(data));
-      console.log("[startExam] error field:", data.error);
-      console.log("[startExam] questions count:", data.questions?.length);
-      console.log("[startExam] session_id:", data.session_id);
+      console.log(
+        "[startExam] parsed data keys:",
+        Object.keys(data)
+      );
 
-      if (data.error) throw new Error(data.error);
+      console.log(
+        "[startExam] questions count:",
+        data.questions?.length
+      );
+
+      console.log(
+        "[startExam] session_id:",
+        data.session_id
+      );
+
+      if (data.error) {
+        throw new Error(data.error);
+      }
 
       if (!data.questions || data.questions.length === 0) {
         throw new Error("No questions returned from server");
@@ -1025,12 +1067,16 @@ export default function AIExamMocker({ student }) {
         hasVisual: q.has_visual || false,
       }));
 
-      console.log("[startExam] normalized[0]:", normalized[0]);
-
       window.__examQuestions = normalized;
+
       answersRef.current = {};
+
       setSessionId(data.session_id);
-      setExamDurationSeconds((data.exam_duration_minutes || 60) * 60);
+
+      setExamDurationSeconds(
+        (data.exam_duration_minutes || 60) * 60
+      );
+
       setTimerKey((k) => k + 1);
       setTimeExpired(false);
       setAnswers({});
@@ -1039,14 +1085,26 @@ export default function AIExamMocker({ student }) {
       setTotalQ(normalized.length);
       setQuestion(normalized[0]);
       setIndex(0);
-      setStarted(true);  // ← this flips the view
+      setStarted(true);
 
-      console.log("[startExam] ✅ done — started=true, totalQ=", normalized.length);
+      console.log(
+        "[startExam] ✅ done — started=true, totalQ=",
+        normalized.length
+      );
 
     } catch (err) {
-      console.error("[startExam] ❌ error:", err.message);
-      alert(err.message || "Failed to start exam");
+
+      console.error(
+        "[startExam] ❌ error:",
+        err.message
+      );
+
+      alert(
+        err.message || "Failed to start exam"
+      );
+
     } finally {
+
       setLoading(false);
     }
   };
@@ -1092,6 +1150,9 @@ export default function AIExamMocker({ student }) {
       const token = await auth.currentUser.getIdToken(true);
 
       // ── Call Flask /submit ─────────────────────────────────────────────
+      // FIXED: Sending `uid` (auth.currentUser.uid) instead of hardcoded/placeholder `STUDENT_ID`.
+      // Passing the static `STUDENT_ID` variable causes attempts to write under "student",
+      // breaking studentUid/studentId query matching in ResultsTab and Firestore security rules.
       const res = await fetch(`${API}/submit`, {
         method: 'POST',
         headers: {
@@ -1100,8 +1161,6 @@ export default function AIExamMocker({ student }) {
         },
         body: JSON.stringify({
           session_id: sessionId,
-          exam_id: selectedExam,
-          student_id: STUDENT_ID,
           answers,
         }),
       });
@@ -1113,67 +1172,6 @@ export default function AIExamMocker({ student }) {
         alert(data.error || 'Submission failed. Please try again.');
         return;   // finally still runs — setSaving(false) is called
       }
-
-      // ── Build Firestore document ───────────────────────────────────────
-      // Use uid (verified non-null above) everywhere — no optional chaining needed
-      const saveData = removeUndefined({
-        // Identity — both fields needed for Firestore rule evaluation
-        studentId: STUDENT_ID,
-        studentUid: uid,                         // ← consistent, verified
-        schoolId: studentInfo?.schoolId || null,
-
-        // Exam reference
-        examId: selectedExam,
-        subject: data.subject || '',
-        title: data.title || data.subject || selectedExam,
-
-        // Answers
-        answers,
-        skipped: [...skipped],
-        answeredCount: Object.keys(answers).length,
-
-        // Marks
-        score: data.score,
-        total: data.total,
-        percentage: data.percentage,
-        markedResults: data.results || [],
-
-        // AI feedback
-        aiFeedback: data.feedback || '',
-        conceptGaps: data.concept_gaps || [],
-        overallSummary: data.analysis?.overallSummary || '',
-        strengths: data.analysis?.strengths || [],
-        weaknesses: data.analysis?.weaknesses || [],
-        studyPlan: data.analysis?.studyPlan || [],
-        analysis: {
-          ...(data.analysis || {}),
-          conceptGaps: data.concept_gaps || [],
-        },
-
-        // Timestamps
-        submittedAt: serverTimestamp(),
-        completedAt: serverTimestamp(),
-
-        metadata: {
-          markingVersion: 2,
-          generatedAt: new Date().toISOString(),
-        },
-      });
-
-      // ── Write to Firestore ─────────────────────────────────────────────
-      // Deterministic doc ID prevents duplicate submissions
-      const attemptRef = doc(
-        db,
-        'exam_attempts',
-        `${uid}_${selectedExam}`      // ← use uid not STUDENT_ID for consistency
-      );
-      await setDoc(attemptRef, saveData, { merge: true });
-      console.log('[Submit] Saved to Firestore:', attemptRef.id);
-
-      // ── NOTE: auditLog write removed ───────────────────────────────────
-      // Firestore rules have allow write: if false on auditLog.
-      // The Flask /submit endpoint writes to auditLog via Admin SDK.
-      // Client-side auditLog writes always fail with permission-denied.
 
       setResults(data);
       setSubmitted(true);
@@ -1313,19 +1311,153 @@ export default function AIExamMocker({ student }) {
                   <span style={{ fontSize: 12, fontWeight: 700, color: "#6b7280" }}>{r.earned}/{r.marks} marks</span>
                 </div>
                 <p style={{ fontSize: 13, color: "#374151", marginBottom: 6 }}>{r.question}</p>
-                <div style={{ fontSize: 12, color: "#6b7280" }}>
-                  <span style={{ fontWeight: 600 }}>Your answer: </span>
-                  <span style={{ color: correct ? "#059669" : "#dc2626" }}>{r.student_answer}</span>
-                </div>
-                {!correct && (
-                  <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>
-                    <span style={{ fontWeight: 600 }}>Correct: </span>
-                    <span style={{ color: "#059669" }}>{r.correct_answer}</span>
-                  </div>
-                )}
-                {r.feedback && (
-                  <div style={{ fontSize: 11, color: "#9ca3af", marginTop: 4, fontStyle: "italic" }}>{r.feedback}</div>
-                )}
+                {(() => {
+                  const hasCorrectAnswer =
+                    r.correct_answer &&
+                    r.correct_answer !== "Not available";
+
+                  const displayAnswer =
+                    hasCorrectAnswer
+                      ? r.correct_answer
+                      : r.model_answer;
+
+                  const isOpen = expandedAnswers[r.question_number];
+
+                  return (
+                    <div style={{ marginTop: 6 }}>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExpandedAnswers(prev => ({
+                            ...prev,
+                            [r.question_number]: !prev[r.question_number]
+                          }))
+                        }
+                        style={{
+                          border: "none",
+                          background: "none",
+                          padding: 0,
+                          cursor: "pointer",
+                          fontSize: 12,
+                          fontWeight: 600,
+                          color: "#2563eb"
+                        }}
+                      >
+                        {isOpen
+                          ? "Hide explanation"
+                          : correct
+                            ? "Click to review explanation"
+                            : "Click to view answer"}
+                      </button>
+
+                      {isOpen && (
+                        <div
+                          style={{
+                            marginTop: 8,
+                            padding: 10,
+                            borderRadius: 8,
+                            background: "#f9fafb",
+                            border: "1px solid #e5e7eb"
+                          }}
+                        >
+                          {!correct && displayAnswer && (
+                            <div style={{ fontSize: 12 }}>
+                              <strong>Correct answer: </strong>
+                              <span style={{ color: "#059669", fontWeight: 600 }}>
+                                {displayAnswer}
+                              </span>
+                            </div>
+                          )}
+
+                          {r.feedback && (
+                            <div style={{ marginTop: 8, fontSize: 12 }}>
+                              <strong>Feedback:</strong>
+                              <div style={{ marginTop: 3 }}>
+                                {r.feedback}
+                              </div>
+                            </div>
+                          )}
+
+                          {r.learning_explanation && (
+                            <div style={{ marginTop: 8, fontSize: 12 }}>
+                              <strong>Explanation:</strong>
+                              <div style={{ marginTop: 3 }}>
+                                {r.learning_explanation}
+                              </div>
+                            </div>
+                          )}
+
+                          {r.why_correct && (
+                            <div style={{ marginTop: 8, fontSize: 12 }}>
+                              <strong>Why your answer is correct:</strong>
+                              <div style={{ marginTop: 3 }}>
+                                {r.why_correct}
+                              </div>
+                            </div>
+                          )}
+
+                          {r.why_student_answer_is_wrong && (
+                            <div style={{ marginTop: 8, fontSize: 12 }}>
+                              <strong>Why your answer needs improvement:</strong>
+                              <div style={{ marginTop: 3 }}>
+                                {r.why_student_answer_is_wrong}
+                              </div>
+                            </div>
+                          )}
+
+                          {r.step_by_step && (
+                            <div style={{ marginTop: 8, fontSize: 12 }}>
+                              <strong>Step-by-step:</strong>
+                              <div style={{ marginTop: 3, whiteSpace: "pre-line" }}>
+                                {r.step_by_step}
+                              </div>
+                            </div>
+                          )}
+
+                          {r.key_learning_point && (
+                            <div style={{ marginTop: 8, fontSize: 12 }}>
+                              <strong>Key learning point:</strong>
+                              <div style={{ marginTop: 3 }}>
+                                {r.key_learning_point}
+                              </div>
+                            </div>
+                          )}
+
+                          {r.exam_tip && (
+                            <div style={{ marginTop: 8, fontSize: 12 }}>
+                              <strong>Exam tip:</strong>
+                              <div style={{ marginTop: 3 }}>
+                                {r.exam_tip}
+                              </div>
+                            </div>
+                          )}
+
+                          {r.practice_question && (
+                            <div style={{ marginTop: 8, fontSize: 12 }}>
+                              <strong>Practice question:</strong>
+                              <div style={{ marginTop: 3 }}>
+                                {r.practice_question}
+                              </div>
+                            </div>
+                          )}
+
+                          {r.encouragement && (
+                            <div
+                              style={{
+                                marginTop: 8,
+                                fontSize: 12,
+                                color: "#2563eb",
+                                fontWeight: 500
+                              }}
+                            >
+                              {r.encouragement}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             );
           })}
