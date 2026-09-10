@@ -23,6 +23,10 @@ import {
     calculateProratedUserAddon,
     calculateCustomUsageQuote
 } from '../utils/tierConfig';
+// Single source of truth for the pricing card -- do not redefine this
+// component locally in here again. See utils/DynamicUsageCard.jsx.
+import { DynamicUsageCard } from '../utils/DynamicUsageCard';
+import { getLoyaltyStatus, redeemLoyaltyCode } from '../services/billingApi';
 import PaymentManager from './PaymentManager';
 
 
@@ -710,248 +714,6 @@ export function AddonQuantitySelector({
 }
 
 
-// DYNAMIC STANDARD USAGE CARD
-export function DynamicUsageCard({ studentCount, teacherCount, billingCycle, onCheckout }) {
-    const quote = calculateCustomUsageQuote(studentCount, teacherCount, billingCycle);
-
-    const cycleLabelMap = {
-        monthly: 'month',
-        quarterly: 'quarter (3 months)',
-        yearly: 'year (12 months)'
-    };
-
-    const cycleMonthsMap = {
-        monthly: 1,
-        quarterly: 3,
-        yearly: 12
-    };
-
-    const isFreeBaseline = quote.isFreeBaseline;
-    const months = cycleMonthsMap[billingCycle] || 1;
-
-    // --- 1. DECLARE ALL BREAKDOWN VARIABLES ---
-    const paidStudents = Math.max(0, studentCount - (FREE_STUDENT_BASE || 0));
-    const paidTeachers = Math.max(0, teacherCount - (FREE_TEACHER_BASE || 0));
-
-    const studentMonthlyCost = paidStudents * (UNIT_PRICES?.studentPerMonth || 0);
-    const teacherMonthlyCost = paidTeachers * (UNIT_PRICES?.teacherPerMonth || 0);
-
-    const handleProceedToCheckout = () => {
-        onCheckout({
-            ...quote,
-            studentCount,
-            teacherCount,
-            billingCycle,
-            action: isFreeBaseline ? 'ACTIVATE_FREE' : 'INITIATE_CHECKOUT'
-        });
-    };
-
-    return (
-        <div className="relative rounded-3xl p-6 sm:p-8 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-xl max-w-2xl mx-auto transition-all">
-            {/* Header Badge */}
-            <div className="flex items-center justify-between gap-4 mb-6">
-                <div className="flex items-center gap-3">
-                    <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-500 to-indigo-600 flex items-center justify-center text-white shadow-md">
-                        <Sparkles size={22} />
-                    </div>
-                    <div>
-                        <h3 className="text-lg font-black text-slate-800 dark:text-white leading-tight">
-                            {isFreeBaseline ? 'Free Baseline Subscription' : 'Custom Usage Subscription'}
-                        </h3>
-                        <p className="text-xs text-slate-400 font-medium">
-                            {isFreeBaseline
-                                ? 'Default allocation for new school accounts'
-                                : 'Tailored to your exact budget & school size'}
-                        </p>
-                    </div>
-                </div>
-
-                {isFreeBaseline ? (
-                    <span className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider text-emerald-700 dark:text-emerald-300 bg-emerald-100 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-700">
-                        Free Baseline Active
-                    </span>
-                ) : quote.discountPercent > 0 && (
-                    <span className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800">
-                        {quote.discountPercent}% Discount Applied
-                    </span>
-                )}
-            </div>
-
-            {/* Pricing Display */}
-            <div className="mb-6 p-5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800">
-                <div className="flex items-baseline gap-2">
-                    <span className="text-3xl sm:text-4xl font-black text-slate-900 dark:text-white">
-                        R{quote.monthlyEquivalent.toLocaleString()}
-                    </span>
-                    <span className="text-xs font-bold text-slate-400">/effective month (incl. VAT)</span>
-                </div>
-                <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-1">
-                    {isFreeBaseline
-                        ? '100% Free baseline allocation. Add seats anytime as your school grows.'
-                        : billingCycle === 'monthly'
-                            ? 'Billed monthly. Adjust or cancel anytime.'
-                            : `Billed as R${quote.periodTotal.toLocaleString()} per ${cycleLabelMap[billingCycle]}`}
-                </p>
-            </div>
-
-            {/* Top Overview Cards */}
-            <div className="space-y-3.5 mb-6">
-                <h4 className="text-xs font-black uppercase tracking-wider text-slate-400">
-                    Included Allocation & Line Items
-                </h4>
-
-                {/* Teachers Line */}
-                <div className="flex items-center justify-between p-3.5 rounded-xl bg-slate-100/70 dark:bg-slate-800/40">
-                    <div className="flex items-center gap-3 text-xs font-bold text-slate-700 dark:text-slate-200">
-                        <Users size={16} className="text-indigo-500" />
-                        <span>{teacherCount} Teacher Accounts</span>
-                    </div>
-                    <span className="text-xs font-black text-slate-900 dark:text-white">
-                        {paidTeachers === 0
-                            ? 'Free (Baseline)'
-                            : `R${teacherMonthlyCost.toLocaleString()}/mo`}
-                    </span>
-                </div>
-
-                {/* Students Line */}
-                <div className="flex items-center justify-between p-3.5 rounded-xl bg-slate-100/70 dark:bg-slate-800/40">
-                    <div className="flex items-center gap-3 text-xs font-bold text-slate-700 dark:text-slate-200">
-                        <GraduationCap size={16} className="text-indigo-500" />
-                        <span>{studentCount} Student Seats</span>
-                    </div>
-                    <span className="text-xs font-black text-slate-900 dark:text-white">
-                        {paidStudents === 0
-                            ? 'Free (Baseline)'
-                            : `R${studentMonthlyCost.toLocaleString()}/mo`}
-                    </span>
-                </div>
-
-                {/* Upload Allowance Line */}
-                <div className="flex items-center justify-between p-3.5 rounded-xl bg-slate-100/70 dark:bg-slate-800/40 border border-indigo-100 dark:border-indigo-950">
-                    <div className="flex items-center gap-3 text-xs font-bold text-slate-700 dark:text-slate-200">
-                        <UploadCloud size={16} className="text-emerald-500" />
-                        <span>Monthly Document Processing Limit</span>
-                    </div>
-                    <span className="text-xs font-black text-emerald-600 dark:text-emerald-400">
-                        {quote.monthlyUploadLimit} Uploads / month
-                    </span>
-                </div>
-            </div>
-
-            {/* Total Billing Summary Reconciliation */}
-            {!isFreeBaseline && (
-                <div className="mb-8 p-4 rounded-2xl bg-indigo-50/50 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-900/50 text-xs space-y-2.5">
-                    <h5 className="font-black text-[11px] uppercase tracking-wider text-indigo-900 dark:text-indigo-200 border-b border-indigo-100 dark:border-indigo-900/40 pb-1.5">
-                        Complete Cost Breakdown
-                    </h5>
-
-                    {/* 1. Teacher Seats Subtotal */}
-                    <div className="flex justify-between text-slate-600 dark:text-slate-400">
-                        <span>
-                            Teacher Accounts ({teacherCount} total
-                            {paidTeachers > 0 ? `, ${paidTeachers} paid × R${UNIT_PRICES?.teacherPerMonth || 50}` : ' - Baseline Included'})
-                        </span>
-                        <span className="font-bold text-slate-800 dark:text-slate-200">
-                            R{teacherMonthlyCost.toLocaleString()}/mo
-                        </span>
-                    </div>
-
-                    {/* 2. Student Seats Subtotal */}
-                    <div className="flex justify-between text-slate-600 dark:text-slate-400">
-                        <span>
-                            Student Seats ({studentCount} total
-                            {paidStudents > 0 ? `, ${paidStudents} paid × R${UNIT_PRICES?.studentPerMonth || 5}` : ' - Baseline Included'})
-                        </span>
-                        <span className="font-bold text-slate-800 dark:text-slate-200">
-                            R{studentMonthlyCost.toLocaleString()}/mo
-                        </span>
-                    </div>
-
-
-                    {/* 4. Platform Maintenance & Access Fee */}
-                    <div className="flex justify-between items-center text-indigo-900 dark:text-indigo-200 font-medium">
-                        <span>Platform Maintenance & Access Fee:</span>
-                        <span className="font-bold">
-                            {quote.isMaintenanceFeeApplied
-                                ? `R${(quote.platformMaintenanceFeeAmount || 150).toLocaleString()}`
-                                : `R${(quote.platformMaintenanceFeeAmount || 150).toLocaleString()}`}
-                        </span>
-                    </div>
-
-
-                    {/* 6. Multi-Month Duration Subtotal */}
-                    {months > 1 && (
-                        <div className="flex justify-between text-slate-600 dark:text-slate-400">
-                            <span>Billing Duration Subtotal ({months} months):</span>
-                            <span className="font-bold text-slate-800 dark:text-slate-200">
-                                R{quote.grossCycleSubtotal.toLocaleString()}
-                            </span>
-                        </div>
-                    )}
-
-                    {/* 7. Cycle Discount */}
-                    {quote.discountPercent > 0 && (
-                        <div className="flex justify-between text-emerald-600 dark:text-emerald-400 font-medium">
-                            <span>{quote.discountPercent}% Savings Discount:</span>
-                            <span>-R{quote.discountAmount.toLocaleString()}</span>
-                        </div>
-                    )}
-
-
-
-                    {/* 9. VAT / Tax Line */}
-                    <div className="flex justify-between text-slate-600 dark:text-slate-400">
-                        <span>VAT / Tax ({quote.taxRatePercent}%):</span>
-                        <span className="font-bold text-slate-800 dark:text-slate-200">
-                            R{quote.taxAmount.toLocaleString()}
-                        </span>
-                    </div>
-
-                    {/* 10. Final Total Billed */}
-                    <div className="pt-2.5 border-t border-indigo-200 dark:border-indigo-800 flex justify-between font-black text-slate-900 dark:text-white text-sm">
-                        <span>Total Billed Now ({cycleLabelMap[billingCycle]}):</span>
-                        <span className="text-indigo-600 dark:text-indigo-400 text-base">
-                            R{quote.periodTotal.toLocaleString()}
-                        </span>
-                    </div>
-                </div>
-            )}
-
-            {/* Policy Notice */}
-            <div className="space-y-2 mb-8 text-[11px] text-slate-500 dark:text-slate-400">
-                <div className="flex items-center gap-2">
-                    <CheckCircle2 size={13} className="text-emerald-500 flex-shrink-0" />
-                    <span>Instant access to tests, exams, and student analytics dashboards.</span>
-                </div>
-                <div className="flex items-center gap-2">
-                    <CheckCircle2 size={13} className="text-emerald-500 flex-shrink-0" />
-                    <span>Adjust student/teacher limits anytime during active term.</span>
-                </div>
-            </div>
-
-            {/* Direct Checkout Button */}
-            <button
-                type="button"
-                onClick={handleProceedToCheckout}
-                className="w-full flex items-center justify-center gap-2 py-4 rounded-2xl text-xs font-black text-white bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 transition-all shadow-lg shadow-indigo-500/25 active:scale-[0.98]"
-            >
-                {isFreeBaseline ? (
-                    <>
-                        <CheckCircle2 size={16} />
-                        Activate Free Baseline Plan
-                    </>
-                ) : (
-                    <>
-                        <CreditCard size={16} />
-                        Proceed to Checkout (R{quote.periodTotal.toLocaleString()})
-                        <ArrowRight size={14} className="ml-1" />
-                    </>
-                )}
-            </button>
-        </div>
-    );
-}
-
 // ─── ACCOUNT STATEMENT ────────────────────────────────────────────────────────
 export function AccountStatement({
     schoolId,
@@ -1114,6 +876,32 @@ export default function SubscriptionManager({ schoolName, schoolId, school, onTi
     const [studentCount, setStudentCount] = useState(school?.studentLimit || school?.studentCount || 50);
     const [teacherCount, setTeacherCount] = useState(school?.teacherLimit || school?.teacherCount || 5);
 
+    // Loyalty status -- fetched once per schoolId and re-fetched right after
+    // a successful redemption so the card flips to the active state without
+    // needing a full page reload.
+    const [loyaltyStatus, setLoyaltyStatus] = useState(null);
+
+    useEffect(() => {
+        if (!schoolId) { setLoyaltyStatus(null); return; }
+        let active = true;
+        getLoyaltyStatus()
+            .then((status) => { if (active) setLoyaltyStatus(status); })
+            .catch((err) => {
+                console.error('Error loading loyalty status:', err);
+                if (active) setLoyaltyStatus({ active: false, cycleEnd: null });
+            });
+        return () => { active = false; };
+    }, [schoolId]);
+
+    const handleRedeemLoyaltyCode = async (code) => {
+        const result = await redeemLoyaltyCode(code);
+        // redeemLoyaltyCode's response uses snake_case (matches the Flask
+        // JSON contract) -- normalize to the camelCase shape the card and
+        // getLoyaltyStatus() both expect.
+        setLoyaltyStatus({ active: true, cycleEnd: result.cycle_end });
+        return result;
+    };
+
     // Live calculated usage quote
     const currentQuote = useMemo(() => {
         return calculateCustomUsageQuote(studentCount, teacherCount, billingCycle);
@@ -1218,6 +1006,8 @@ export default function SubscriptionManager({ schoolName, schoolId, school, onTi
                         billingCycle={billingCycle}
                         totalEstimatedPrice={totalEstimatedPrice}
                         onCheckout={handleConfirmCheckout}
+                        loyaltyStatus={loyaltyStatus}
+                        onRedeemLoyaltyCode={handleRedeemLoyaltyCode}
                     />
                 </div>
             )}

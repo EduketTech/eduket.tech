@@ -15,8 +15,38 @@ import Swal from 'sweetalert2';
 // ─── Fetch School Subscription & Seats ───────────────────────────────────────
 
 /**
+ * Reads schools/{schoolId}.loyaltySubscription and returns whether it's
+ * currently live. Mirrors is_loyalty_subscription_active() in pricing.py --
+ * keep the two in sync if the cycle logic ever changes.
+ */
+function resolveLoyaltyStatus(schoolData) {
+    const loyalty = schoolData?.loyaltySubscription;
+    if (!loyalty?.active) {
+        return { isLoyaltyActive: false, loyaltyCycleEnd: null };
+    }
+
+    // Firestore Timestamps come back with a .toDate(); a plain ISO string
+    // (e.g. from a manual write) is handled too so this doesn't break if
+    // the field was ever set outside the redeem_loyalty_code() flow.
+    const cycleEnd = loyalty.cycleEnd?.toDate
+        ? loyalty.cycleEnd.toDate()
+        : (loyalty.cycleEnd ? new Date(loyalty.cycleEnd) : null);
+
+    const isLoyaltyActive = Boolean(cycleEnd) && cycleEnd > new Date();
+
+    return {
+        isLoyaltyActive,
+        loyaltyCycleEnd: isLoyaltyActive ? cycleEnd.toISOString() : null,
+    };
+}
+
+/**
  * Fetches school subscription details and calculates allocated seats,
  * accounting for free baseline allocations if custom seats aren't set.
+ *
+ * A school with an active loyalty cycle short-circuits all of this and
+ * gets unlimited seats/uploads for the duration of that cycle -- see
+ * resolveLoyaltyStatus() above.
  */
 export async function getSchoolSubscription(schoolId) {
     const defaultBaseline = {
@@ -31,22 +61,43 @@ export async function getSchoolSubscription(schoolId) {
             purchasedSeats: { students: 0, teachers: 0 },
             examLimit: FREE_TIER_MONTHLY_LIMIT || 5,
             billingCycle: 'monthly',
-            tierId: 'free'
+            tierId: 'free',
+            isLoyaltyActive: false,
+            loyaltyCycleEnd: null,
         };
     }
 
     try {
-        // First check 'subscriptions' collection
-        let snap = await getDoc(doc(db, 'subscriptions', schoolId));
-        let data = snap.exists() ? snap.data() : null;
+        // Fetch the subscription doc and the school doc together -- we need
+        // the school doc regardless of which branch we end up in, both for
+        // the loyalty check and for the existing embedded-subscription
+        // fallback below.
+        const [subSnap, schoolSnap] = await Promise.all([
+            getDoc(doc(db, 'subscriptions', schoolId)),
+            getDoc(doc(db, 'schools', schoolId)),
+        ]);
+
+        const schoolData = schoolSnap.exists() ? schoolSnap.data() : null;
+        const { isLoyaltyActive, loyaltyCycleEnd } = resolveLoyaltyStatus(schoolData);
+
+        if (isLoyaltyActive) {
+            return {
+                status: 'active',
+                seats: { students: Infinity, teachers: Infinity },
+                purchasedSeats: { students: 0, teachers: 0 },
+                examLimit: Infinity,
+                billingCycle: 'monthly',
+                tierId: 'loyalty',
+                isLoyaltyActive: true,
+                loyaltyCycleEnd,
+            };
+        }
+
+        let data = subSnap.exists() ? subSnap.data() : null;
 
         // Fallback: Check if subscription data is stored embedded inside the 'schools' document
-        if (!data) {
-            const schoolSnap = await getDoc(doc(db, 'schools', schoolId));
-            if (schoolSnap.exists()) {
-                const schoolData = schoolSnap.data();
-                data = schoolData.subscription || { tier: schoolData.tier || 'free' };
-            }
+        if (!data && schoolData) {
+            data = schoolData.subscription || { tier: schoolData.tier || 'free' };
         }
 
         if (!data) {
@@ -56,7 +107,9 @@ export async function getSchoolSubscription(schoolId) {
                 purchasedSeats: { students: 0, teachers: 0 },
                 examLimit: FREE_TIER_MONTHLY_LIMIT || 5,
                 billingCycle: 'monthly',
-                tierId: 'free'
+                tierId: 'free',
+                isLoyaltyActive: false,
+                loyaltyCycleEnd: null,
             };
         }
 
@@ -76,7 +129,9 @@ export async function getSchoolSubscription(schoolId) {
             examLimit: examLimit || FREE_TIER_MONTHLY_LIMIT || 5,
             billingCycle: data.billingCycle || 'monthly',
             addons: data.addons || {},
-            tierId: data.tier || 'custom'
+            tierId: data.tier || 'custom',
+            isLoyaltyActive: false,
+            loyaltyCycleEnd: null,
         };
     } catch (err) {
         console.error("Error loading school subscription:", err);
@@ -86,7 +141,9 @@ export async function getSchoolSubscription(schoolId) {
             purchasedSeats: { students: 0, teachers: 0 },
             examLimit: FREE_TIER_MONTHLY_LIMIT || 5,
             billingCycle: 'monthly',
-            tierId: 'free'
+            tierId: 'free',
+            isLoyaltyActive: false,
+            loyaltyCycleEnd: null,
         };
     }
 }
@@ -134,7 +191,10 @@ export async function canAddTeacher(schoolId) {
         allowed,
         current,
         limit: maxSeats,
-        message: allowed ? 'Allowed' : `Teacher seat limit reached (${current}/${maxSeats}). Please add teacher seats to your subscription.`
+        isUnlimited: !Number.isFinite(maxSeats),
+        message: allowed
+            ? 'Allowed'
+            : `Teacher seat limit reached (${current}/${maxSeats}). Please add teacher seats to your subscription.`
     };
 }
 
@@ -154,7 +214,10 @@ export async function canAddStudent(schoolId) {
         allowed,
         current,
         limit: maxSeats,
-        message: allowed ? 'Allowed' : `Student seat limit reached (${current}/${maxSeats}). Please add student seats to your subscription.`
+        isUnlimited: !Number.isFinite(maxSeats),
+        message: allowed
+            ? 'Allowed'
+            : `Student seat limit reached (${current}/${maxSeats}). Please add student seats to your subscription.`
     };
 }
 
@@ -174,7 +237,10 @@ export async function canUploadExam(schoolId) {
         allowed,
         current,
         limit,
-        message: allowed ? 'Allowed' : `Monthly exam upload limit reached (${current}/${limit}). Increase your purchased student seats to expand your upload quota.`
+        isUnlimited: !Number.isFinite(limit),
+        message: allowed
+            ? 'Allowed'
+            : `Monthly exam upload limit reached (${current}/${limit}). Increase your purchased student seats to expand your upload quota.`
     };
 }
 
@@ -210,6 +276,11 @@ export async function guardedAction(checkFn, onUpgrade) {
 export function guardFeature(subDetails, featureKey, onUpgrade) {
     let allowed = false;
 
+    // Loyalty schools get every gated feature for the duration of their cycle.
+    if (subDetails?.isLoyaltyActive) {
+        return true;
+    }
+
     if (featureKey === 'parentDashboard') {
         // Checks if parent portal add-on is explicitly enabled or granted by tier
         allowed = Boolean(subDetails?.addons?.parentPortal) || canAccessParentDashboard(subDetails?.tierId);
@@ -243,10 +314,12 @@ export async function getSchoolUsage(schoolId) {
     ]);
 
     return {
-        teachers: { used: teachers, limit: sub.seats.teachers },
-        students: { used: students, limit: sub.seats.students },
-        exams: { used: exams, limit: sub.examLimit },
+        teachers: { used: teachers, limit: sub.seats.teachers, isUnlimited: !Number.isFinite(sub.seats.teachers) },
+        students: { used: students, limit: sub.seats.students, isUnlimited: !Number.isFinite(sub.seats.students) },
+        exams: { used: exams, limit: sub.examLimit, isUnlimited: !Number.isFinite(sub.examLimit) },
         billingCycle: sub.billingCycle,
         status: sub.status,
+        isLoyaltyActive: sub.isLoyaltyActive,
+        loyaltyCycleEnd: sub.loyaltyCycleEnd,
     };
 }

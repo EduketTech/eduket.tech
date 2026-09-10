@@ -1,6 +1,6 @@
 // contexts/UserContext.js
 import { createContext, useContext, useState, useEffect } from 'react';
-import { getAuth, onAuthStateChanged } from 'firebase/auth';
+import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../utils/firebase';
 
@@ -19,17 +19,26 @@ export const UserProvider = ({ children }) => {
 
       if (firebaseUser) {
         try {
-          // Force token refresh BEFORE any Firestore read.
-          // onAuthStateChanged fires as soon as Auth knows about the user
-          // but the ID token may not be issued yet. Without this line,
-          // request.auth is null in Firestore rules → permission-denied.
+          // Force token refresh before Firestore read
           await firebaseUser.getIdToken(true);
 
-          const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
-          setUserRole(userDoc.exists() ? userDoc.data().role : null);
+          const userDoc = await getDoc(
+            doc(db, 'users', firebaseUser.uid)
+          );
+
+          setUserRole(
+            userDoc.exists()
+              ? userDoc.data().role
+              : null
+          );
 
         } catch (err) {
-          console.error('[UserContext]', err.code, err.message);
+          console.error(
+            '[UserContext]',
+            err.code,
+            err.message
+          );
+
           setUserRole(null);
         }
       } else {
@@ -40,8 +49,35 @@ export const UserProvider = ({ children }) => {
     });
   }, []);
 
+  // Logout current Firebase user
+  const logout = async () => {
+    try {
+      const auth = getAuth();
+      await signOut(auth);
+
+      // onAuthStateChanged will handle:
+      // setUser(null)
+      // setUserRole(null)
+    } catch (err) {
+      console.error(
+        '[UserContext] Logout failed:',
+        err.code,
+        err.message
+      );
+
+      throw err;
+    }
+  };
+
   return (
-    <UserContext.Provider value={{ user, userRole, loading }}>
+    <UserContext.Provider
+      value={{
+        user,
+        userRole,
+        loading,
+        logout,
+      }}
+    >
       {children}
     </UserContext.Provider>
   );

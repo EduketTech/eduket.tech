@@ -73,6 +73,7 @@ import PrivacyPolicy from './pages/PrivacyPolicy';
 import TermsOfService from './pages/TermsOfService';
 import ContactUs from './pages/ContactUs';
 import ParentDashboard from './components/ParentDashboard';
+import AdminLoyaltyCodes from './components/Admin/AdminLoyaltyCodes';
 
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -609,6 +610,8 @@ function App() {
             <Route path="/exam-rules" element={<ExamRules />} />
             <Route path="/payment/success" element={<PaymentSuccess />} />
             <Route path="/payment/cancel" element={<PaymentCancel />} />
+            <Route path="/admin" element={<AdminLoyaltyCodes />} />
+
 
             {/* ── Teacher dashboard ───────────────────────────────────── */}
             <Route

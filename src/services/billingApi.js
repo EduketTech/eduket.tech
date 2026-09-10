@@ -59,9 +59,15 @@ export function formatCurrency(amount = 0, currencyCode = 'ZAR') {
 /**
  * Quote for a specific plan + seat count + cycle - used before proceeding to payment.
  * Supports both School and Parent subscriptions.
- * 
+ *
  * Matches billing_routes.py's /api/billing/quote contract:
  * POST { plan, students, teachers, billingCycle, additionalExamPacks }
+ *
+ * Note: the backend applies the loyalty bypass itself (it checks
+ * is_loyalty_subscription_active() before pricing), so a loyalty-active
+ * school calling this normally will already get back is_loyalty_plan: true,
+ * total_due_now: 0, monthly_upload_limit: null. You don't need to pass
+ * anything loyalty-related into this call.
  */
 export async function fetchPriceQuote({
     plan = 'school',
@@ -114,6 +120,91 @@ export async function initiatePayment({
             billingCycle,
             additionalExamPacks: Number(additionalExamPacks),
         }),
+    });
+    return handleResponse(res);
+}
+
+/**
+ * Fetches the calling school's current loyalty status. Call this alongside
+ * fetchPriceQuote() when rendering the billing page so you know whether to
+ * show the "redeem a code" box or the active/unlimited state.
+ *
+ * Matches loyalty_routes.py's GET /api/billing/loyalty/status contract:
+ * → { active: boolean, cycleEnd: string | null }
+ */
+export async function getLoyaltyStatus() {
+    const headers = await getAuthHeaders();
+    const res = await fetch(`${API_BASE}/api/billing/loyalty/status`, {
+        method: 'GET',
+        headers,
+    });
+    return handleResponse(res);
+}
+
+/**
+ * Redeems a loyalty code for the calling school. The school is derived
+ * server-side from the auth token -- never send a schoolId here.
+ *
+ * Matches loyalty_routes.py's POST /api/billing/loyalty/redeem contract:
+ * POST { code } → { schoolId, code, cycleStart, cycleEnd, status }
+ *
+ * Throws (via handleResponse) with the backend's user-facing message on an
+ * invalid, expired, deactivated, or exhausted code -- safe to show directly
+ * in the UI, e.g. in DynamicUsageCard's onRedeemLoyaltyCode handler.
+ */
+export async function redeemLoyaltyCode(code) {
+    const headers = await getAuthHeaders();
+    const res = await fetch(`${API_BASE}/api/billing/loyalty/redeem`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ code: (code || '').trim().toUpperCase() }),
+    });
+    return handleResponse(res);
+}
+
+// ─── Admin-only loyalty code management ───────────────────────────────────
+// These three require the caller's auth token to carry the admin custom
+// claim -- see require_admin in loyalty_routes.py. A non-admin token gets
+// a 403 from the backend, not a client-side check, so don't rely on
+// hiding the UI as the actual security boundary.
+
+/**
+ * Every loyalty code with its redemption state.
+ * → { codes: [{ code, active, description, maxRedemptions, redeemedCount,
+ *               redeemedBySchools: [{schoolId, schoolName}], expiresAt, createdAt }] }
+ */
+export async function listLoyaltyCodes() {
+    const headers = await getAuthHeaders();
+    const res = await fetch(`${API_BASE}/api/billing/loyalty/admin/list`, {
+        method: 'GET',
+        headers,
+    });
+    return handleResponse(res);
+}
+
+/**
+ * Mint a new code. All fields optional -- omit `code` to auto-generate.
+ */
+export async function createLoyaltyCode({ code, maxRedemptions, expiresAt, description } = {}) {
+    const headers = await getAuthHeaders();
+    const res = await fetch(`${API_BASE}/api/billing/loyalty/admin/create`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ code, maxRedemptions, expiresAt, description }),
+    });
+    return handleResponse(res);
+}
+
+/**
+ * Deactivate a code so it can no longer be (re-)redeemed. Schools already
+ * mid-cycle keep access until their cycleEnd -- this doesn't revoke
+ * anything already granted.
+ */
+export async function deactivateLoyaltyCode(code) {
+    const headers = await getAuthHeaders();
+    const res = await fetch(`${API_BASE}/api/billing/loyalty/admin/${encodeURIComponent(code)}/deactivate`, {
+        method: 'POST',
+        headers,
     });
     return handleResponse(res);
 }
