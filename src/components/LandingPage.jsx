@@ -22,9 +22,8 @@ export default function LandingPage() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-blue-50">
 
-      <ExamRules/>
+      <ExamRules />
 
     </div>
   );
 }
-  

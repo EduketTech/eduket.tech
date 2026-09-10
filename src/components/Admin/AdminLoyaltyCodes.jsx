@@ -4,14 +4,11 @@ import {
 } from 'lucide-react';
 import { listLoyaltyCodes, createLoyaltyCode, deactivateLoyaltyCode } from '../../services/billingApi';
 import { useUser } from '../../contexts/UserContext';
+import AdminLogin from './AdminLogin';
 
-/**
- * Admin-only. Mount this behind whatever route/guard already restricts
- * access to admin users in your app -- it does not do its own admin check
- * beyond what the backend enforces on each call (a non-admin token gets a
- * 403 from listLoyaltyCodes/createLoyaltyCode/deactivateLoyaltyCode).
- */
 export default function AdminLoyaltyCodes() {
+    const { user, loading: authLoading, logout } = useUser(); // <--- Access user state
+
     const [codes, setCodes] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
@@ -26,7 +23,6 @@ export default function AdminLoyaltyCodes() {
 
     const [copiedCode, setCopiedCode] = useState(null);
     const [actioningCode, setActioningCode] = useState(null);
-    const { logout } = useUser();
 
     const handleLogout = async () => {
         try {
@@ -37,6 +33,7 @@ export default function AdminLoyaltyCodes() {
     };
 
     const loadCodes = useCallback(async () => {
+        if (!user) return; // Prevent load if not signed in
         setLoading(true);
         setError(null);
         try {
@@ -47,11 +44,27 @@ export default function AdminLoyaltyCodes() {
         } finally {
             setLoading(false);
         }
-    }, []);
+    }, [user]);
 
     useEffect(() => {
-        loadCodes();
-    }, [loadCodes]);
+        if (user) {
+            loadCodes();
+        }
+    }, [loadCodes, user]);
+
+    // ── Auth Guard Gate ─────────────────────────────────────────
+    if (authLoading) {
+        return (
+            <div className="p-20 text-center text-xs text-slate-400 animate-pulse">
+                Verifying Admin Session…
+            </div>
+        );
+    }
+
+    if (!user) {
+        return <AdminLogin onLoginSuccess={loadCodes} />;
+    }
+    // ────────────────────────────────────────────────────────────
 
     const handleCreate = async (e) => {
         e.preventDefault();
@@ -142,9 +155,9 @@ export default function AdminLoyaltyCodes() {
 
                     <button
                         onClick={handleLogout}
-                        className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold text-red-500 bg-[#f7b719]  border border-white/10 transition"
+                        className="flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 dark:bg-red-950/40 dark:border-red-900/50 transition"
                     >
-                        <LogOut className="w-4 h-4 txt-red-500 " />
+                        <LogOut className="w-4 h-4 text-red-500" />
                         Logout
                     </button>
                 </div>
