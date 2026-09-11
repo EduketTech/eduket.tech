@@ -24,7 +24,7 @@ import {
 const APP_NAME = 'Eduket OS';
 const COMPANY_NAME = 'Nextgen Skills Development';
 const WEBSITE = 'https://eduket.tech';
-const EMAIL_ADDRESS = 'nextgenskills96@gmail.com';
+const EMAIL_ADDRESS = 'adminnextgenskills@gmail.com';
 
 const SUPPORT_EMAIL = [EMAIL_ADDRESS];
 const SALES_EMAIL = [EMAIL_ADDRESS];
@@ -32,8 +32,8 @@ const LEGAL_EMAIL = [EMAIL_ADDRESS];
 const PRIVACY_EMAIL = [EMAIL_ADDRESS];
 const SECURITY_EMAIL = [EMAIL_ADDRESS];
 
-const PHONE_NUMBER = '+27 65 656 4983'; // e.g. '+27 41 000 0000' — leave blank to hide the card
-const WHATSAPP_NUMBER = '27656564983'; // e.g. '27820000000' (digits only, no +) — leave blank to hide
+const PHONE_NUMBER = '+27 76 127 2025'; // e.g. '+27 41 000 0000' — leave blank to hide the card
+const WHATSAPP_NUMBER = '27761272025'; // e.g. '27820000000' (digits only, no +) — leave blank to hide
 const OFFICE_ADDRESS = '33 Heatherbank, Gqeberha, South Africa'; // e.g. 'Gqeberha, Eastern Cape, South Africa' — leave blank to hide
 
 const GITHUB_URL = ''; // e.g. 'https://github.com/yourorg/eduket' — leave blank to hide

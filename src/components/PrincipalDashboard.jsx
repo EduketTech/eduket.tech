@@ -11,7 +11,7 @@ import { useNavigate } from 'react-router-dom';
 import { signOut } from 'firebase/auth';
 import { auth, db } from '../utils/firebase';
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
-import { doc, getDoc, setDoc, serverTimestamp, orderBy, collection, query, where, onSnapshot, getDocs } from 'firebase/firestore';
+import { doc, getDoc, setDoc, serverTimestamp, orderBy, collection, query, where, onSnapshot, getDocs, limit } from 'firebase/firestore';
 import { createPortal } from 'react-dom';
 import { useUser } from '../contexts/UserContext';
 import { useActiveTier } from '../utils/firestoreHelpers';
@@ -219,7 +219,7 @@ export function ScoreBadge({ score }) {
             score >= 40 ? 'text-orange-600 bg-orange-50 dark:bg-orange-950/40' :
                 'text-red-600 bg-red-50 dark:bg-red-950/40';
     return (
-        <span className={`text-xs font-black px-2 py-0.5 rounded-lg ${color}`}>{score}%</span>
+        <span className={`text-xs font-black px-2 py-0.5 rounded-lg ${color}`}>{score}</span>
     );
 }
 
@@ -458,6 +458,33 @@ function MobileDrawer({ open, onClose, children }) {
     );
 }
 
+
+// Permission matrix based on subscription tier
+export const isFeatureAllowed = (tier = 'free', featureName) => {
+    // Unconditionally allow auditLog for everyone
+    if (featureName === 'auditLog') return true;
+
+    const currentTier = (tier || 'free').toLowerCase();
+    const allowed = TIER_FEATURES[currentTier] || [];
+    return allowed.includes('*') || allowed.includes(featureName);
+};
+
+
+export const logAuditEvent = async ({ schoolId, actorUid, action, target, details = {} }) => {
+    try {
+        await addDoc(collection(db, 'auditLog'), {
+            schoolId,
+            actorUid: actorUid || 'System',
+            action,       // e.g., 'CREATE_EXAM', 'UPDATE_STUDENT', 'DELETE_USER'
+            target,       // e.g., 'Grade 12 Math Exam'
+            details,      // Any additional context
+            timestamp: serverTimestamp(),
+        });
+    } catch (err) {
+        console.error('Failed to record audit event:', err);
+    }
+};
+
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 export default function PrincipalDashboard({ principal }) {
     // ─── 1. CONTEXT & ROUTER ──────────────────────────────────────────────
@@ -623,6 +650,9 @@ export default function PrincipalDashboard({ principal }) {
     // ─── 5. TIER — needs schoolId, then usage ─────────────────────────────
     const { seats, examLimit, isFreeBaseline, loading: subLoading } = useCurrentSubscription(schoolId);
     const limits = useLimitStatus(seats, examLimit, usage);
+    const [auditLoading, setAuditLoading] = useState(false);
+
+
 
     // -------------------------------------------------------------
     // 1. DYNAMIC SUBSCRIPTION LISTENER
@@ -881,6 +911,41 @@ export default function PrincipalDashboard({ principal }) {
             err => console.error('[pending parents]', err)
         );
     }, [schoolId]);
+
+
+
+    // 2. Fetch audit events from Firestore
+    const fetchAuditLogs = useCallback(async () => {
+        if (!schoolId) return;
+        setAuditLoading(true);
+        try {
+            // Query logs for the school ordered by timestamp
+            const logsRef = collection(db, 'auditLog');
+            const q = query(
+                logsRef,
+                where('schoolId', '==', schoolId),
+                orderBy('timestamp', 'desc'),
+                limit(50)
+            );
+            const snapshot = await getDocs(q);
+            const logs = snapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+            }));
+            setAuditLog(logs);
+        } catch (err) {
+            console.error('[AuditLog] Failed to fetch audit logs:', err);
+        } finally {
+            setAuditLoading(false);
+        }
+    }, [schoolId]);
+
+    // 3. Trigger fetch when switching to the 'audit' tab
+    useEffect(() => {
+        if (activeTab === 'audit' && isFeatureAllowed(activeTier, 'auditLog')) {
+            fetchAuditLogs();
+        }
+    }, [activeTab, activeTier, fetchAuditLogs]);
 
 
     // ── SIDEBAR CONTENT ───────────────────────────────────────────────────────
@@ -1624,12 +1689,25 @@ export default function PrincipalDashboard({ principal }) {
                             <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 overflow-hidden">
                                 <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between">
                                     <h2 className="text-sm font-black text-slate-700 dark:text-white">Audit Log</h2>
-                                    <span className="text-xs text-slate-400">{auditLog.length} entries</span>
+                                    <div className="flex items-center gap-2">
+                                        <button
+                                            onClick={fetchAuditLogs}
+                                            className="text-xs text-amber-500 font-bold hover:underline"
+                                        >
+                                            Refresh
+                                        </button>
+                                        <span className="text-xs text-slate-400">({auditLog.length} entries)</span>
+                                    </div>
                                 </div>
-                                {auditLog.length === 0 ? (
+
+                                {auditLoading ? (
+                                    <div className="p-10 text-center text-xs text-slate-400 animate-pulse">
+                                        Loading audit trail…
+                                    </div>
+                                ) : auditLog.length === 0 ? (
                                     <div className="p-10 text-center">
                                         <Clock className="w-8 h-8 text-slate-300 mx-auto mb-2" />
-                                        <p className="text-xs text-slate-400">No audit events yet.</p>
+                                        <p className="text-xs text-slate-400">No audit events recorded yet.</p>
                                     </div>
                                 ) : (
                                     <div className="overflow-x-auto">
@@ -1642,29 +1720,41 @@ export default function PrincipalDashboard({ principal }) {
                                                 </tr>
                                             </thead>
                                             <tbody>
-                                                {auditLog.map(ev => (
-                                                    <tr key={ev.id} className="border-b border-slate-50 dark:border-slate-700/50">
-                                                        <td className="px-4 py-3">
-                                                            <span className="text-[9px] font-black px-2 py-0.5 rounded-lg bg-slate-100 text-slate-500">
-                                                                {ev.action || 'event'}
-                                                            </span>
-                                                        </td>
-                                                        <td className="px-4 py-3 font-medium text-slate-700 dark:text-slate-200 max-w-[200px] truncate">
-                                                            {ev.details?.title || ev.target || '—'}
-                                                        </td>
-                                                        <td className="px-4 py-3 text-slate-500">{ev.actorUid || 'System'}</td>
-                                                        <td className="px-4 py-3 text-slate-400">
-                                                            {ev.timestamp?.toDate?.().toLocaleString('en-ZA') || '—'}
-                                                        </td>
-                                                    </tr>
-                                                ))}
+                                                {auditLog.map(ev => {
+                                                    // Safely format the Firestore Timestamp object
+                                                    const formattedDate = ev.timestamp?.toDate
+                                                        ? ev.timestamp.toDate().toLocaleString('en-ZA', { dateStyle: 'medium', timeStyle: 'short' })
+                                                        : '—';
+
+                                                    return (
+                                                        <tr key={ev.id} className="border-b border-slate-50 dark:border-slate-700/50 hover:bg-slate-50/50 dark:hover:bg-slate-800/50">
+                                                            <td className="px-4 py-3">
+                                                                <span className="text-[9px] font-black px-2 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 uppercase">
+                                                                    {ev.action || 'event'}
+                                                                </span>
+                                                            </td>
+                                                            <td className="px-4 py-3 font-medium text-slate-700 dark:text-slate-200 max-w-[200px] truncate">
+                                                                {ev.target || '—'}
+                                                            </td>
+                                                            <td className="px-4 py-3 text-slate-500 font-mono text-[10px]">
+                                                                {ev.actorUid || 'System'}
+                                                            </td>
+                                                            <td className="px-4 py-3 text-slate-400">
+                                                                {formattedDate}
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                })}
                                             </tbody>
                                         </table>
                                     </div>
                                 )}
                             </div>
-                        ) : <LockedFeature featureName="Audit Log" requiredTier="starter" onUpgrade={handleUpgrade} />
+                        ) : (
+                            <LockedFeature featureName="Audit Log" requiredTier="starter" onUpgrade={handleUpgrade} />
+                        )
                     )}
+
 
                     {/* ── SUBSCRIPTIONS TAB ── */}
                     {activeTab === 'subscriptions' && (

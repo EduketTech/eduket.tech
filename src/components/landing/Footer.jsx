@@ -16,7 +16,7 @@ export default function Footer() {
             <a href="/contact" className="font-plex-sans text-xs text-[#AEB7C7] hover:text-[#1EA1FE] transition-colors">
               Contact
             </a>
-            <a href="/admin" className="font-plex-sans text-xs text-[#AEB7C7] hover:text-[#1EA1FE] transition-colors">Admin</a>
+            <a href="/admin" className="font-plex-sans text-xs text-[#AEB7C7] hover:text-[#1EA1FE] transition-colors">المدير</a>
           </div>
         </div>
       </div>

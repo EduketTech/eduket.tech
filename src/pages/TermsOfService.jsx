@@ -26,7 +26,7 @@ import {
 } from 'lucide-react';
 
 // ── Effective date — update whenever the terms change ─────────────────────
-const EMAIL_ADDRESS = 'nextgenskills96@gmail.com';
+const EMAIL_ADDRESS = 'adminnextgenskills@gmail.com';
 const EFFECTIVE_DATE = '12 July 2026';
 const LAST_REVIEWED = '12 July 2026';
 const COMPANY_NAME = 'Nextgen Skills Development';
