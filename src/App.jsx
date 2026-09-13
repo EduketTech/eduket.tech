@@ -231,6 +231,7 @@ function App() {
   const navigate = useNavigate();
 
 
+
   // ── Backend keep-alive ─────────────────────────────────────────────────────
   // Render's free tier spins down after 15 min of inactivity.
   // Pinging every 10 minutes prevents cold starts during exams.
@@ -373,6 +374,12 @@ function App() {
     || null;
   const displayGrade = userProfile?.grade || studentInfo?.grade || null;
   const displayRole = userProfile?.role || (studentInfo ? 'student' : null);
+  // In App.jsx (Parent)
+  const handleLogout = () => {
+    setUser(null);
+    setCurrentView('home'); // Reset active screen view
+    localStorage.removeItem('token');
+  };
 
 
   // ── AI Tutor access guard ─────────────────────────────────────────────────

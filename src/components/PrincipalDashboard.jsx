@@ -244,8 +244,44 @@ export function StatCard({ label, value, sub, icon: Icon, color = 'indigo' }) {
     );
 }
 
+// NOTE: assumes the same lucide-react icon imports already present in this
+// file (Sparkles, Crown, Zap, ArrowUpRight, X, Lock), plus one new one:
+// Gift -- add it to the existing lucide-react import line at the top of
+// this file: `import { ..., Gift } from 'lucide-react';`
 
-export function UsageMeter({ label, used = 0, limit = 10, color = '#4f46e5' }) {
+export function UsageMeter({ label, used = 0, limit = 10, color = '#4f46e5', unlimited = false }) {
+    // Loyalty (and any other unlimited-access state) is signaled either by
+    // the explicit `unlimited` prop, or by the backend's own "unlimited"
+    // sentinels: `limit == null` (pricing.py's monthly_upload_limit=None)
+    // or `limit === -1` (app.py/tier_limits.py's check_school_exam_quota
+    // convention). Checking all three means this component works whether
+    // the caller passes the raw API value straight through or has already
+    // normalized it.
+    const isUnlimited = unlimited || limit === null || limit === undefined || limit === -1;
+
+    if (isUnlimited) {
+        return (
+            <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-xs">
+                    <span className="font-semibold text-slate-700 dark:text-slate-200">
+                        {label}
+                    </span>
+                    <div className="flex items-center">
+                        <span className="tabular-nums text-amber-600 dark:text-amber-400 font-bold">
+                            {Math.max(0, Number(used) || 0).toLocaleString()} used
+                        </span>
+                        <span className="text-[10px] uppercase font-bold tracking-wider bg-amber-100 dark:bg-amber-950/60 text-amber-600 dark:text-amber-300 px-1.5 py-0.5 rounded ml-1.5">
+                            Unlimited
+                        </span>
+                    </div>
+                </div>
+                <div className="h-2 w-full bg-amber-100 dark:bg-amber-950/40 rounded-full overflow-hidden relative">
+                    <div className="h-full w-full rounded-full bg-gradient-to-r from-amber-400 to-amber-500" />
+                </div>
+            </div>
+        );
+    }
+
     // 1. Ensure clean numerical inputs (no unlimited / null fallbacks)
     const safeLimit = Math.max(1, Number(limit) || 10);
     const safeUsed = Math.max(0, Number(used) || 0);
@@ -316,15 +352,20 @@ export function UsageMeter({ label, used = 0, limit = 10, color = '#4f46e5' }) {
 }
 
 
-export function TierBadge({ tierId, isFreeBaseline, collapsed }) {
-    // Resolve free baseline state based on tierId or boolean prop
-    const isFree = isFreeBaseline ?? (tierId === 'free' || tierId === 'free_tier');
+export function TierBadge({ tierId, isFreeBaseline, isLoyaltyActive, collapsed }) {
+    // Loyalty takes precedence over both free-baseline and custom-plan
+    // framing -- a school mid-loyalty-cycle isn't "free" in the trial
+    // sense and isn't paying for a custom plan either.
+    const isLoyalty = isLoyaltyActive || tierId === 'loyalty';
+    const isFree = !isLoyalty && (isFreeBaseline ?? (tierId === 'free' || tierId === 'free_tier'));
 
-    const Icon = isFree ? Sparkles : Crown;
-    const label = isFree ? 'Free Baseline' : 'Custom Plan';
-    const gradient = isFree
-        ? 'from-slate-400 to-slate-500 shadow-slate-500/10'
-        : 'from-indigo-500 to-indigo-600 shadow-indigo-500/10';
+    const Icon = isLoyalty ? Gift : (isFree ? Sparkles : Crown);
+    const label = isLoyalty ? 'Loyalty Access' : (isFree ? 'Free Baseline' : 'Custom Plan');
+    const gradient = isLoyalty
+        ? 'from-amber-500 to-orange-500 shadow-amber-500/10'
+        : isFree
+            ? 'from-slate-400 to-slate-500 shadow-slate-500/10'
+            : 'from-indigo-500 to-indigo-600 shadow-indigo-500/10';
 
     if (collapsed) {
         return (
@@ -349,7 +390,41 @@ export function TierBadge({ tierId, isFreeBaseline, collapsed }) {
     );
 }
 
-export function UpgradeBanner({ isFreeBaseline, onUpgrade, onDismiss }) {
+export function UpgradeBanner({ isFreeBaseline, isLoyaltyActive, loyaltyCycleEnd, onUpgrade, onDismiss }) {
+    // Loyalty-active schools see a status banner instead of an upgrade
+    // pitch -- pushing "Manage Seats" at a school that's already getting
+    // full access for free reads as either confusing or actively
+    // undermining the loyalty offer.
+    if (isLoyaltyActive) {
+        const cycleEndLabel = loyaltyCycleEnd
+            ? new Date(loyaltyCycleEnd).toLocaleDateString('en-ZA', { day: 'numeric', month: 'short', year: 'numeric' })
+            : null;
+
+        return (
+            <div className="relative bg-gradient-to-r from-amber-500 to-orange-500 rounded-2xl p-4 flex items-center gap-3 overflow-hidden print:hidden">
+                <div className="absolute inset-0 opacity-10">
+                    <div className="absolute -top-4 -right-4 w-32 h-32 rounded-full bg-white" />
+                    <div className="absolute -bottom-8 right-20 w-24 h-24 rounded-full bg-white" />
+                </div>
+                <div className="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center flex-shrink-0">
+                    <Gift size={16} className="text-white" />
+                </div>
+                <div className="flex-1 min-w-0">
+                    <p className="text-[11px] font-black text-black leading-snug">
+                        {cycleEndLabel
+                            ? `Loyalty access active — unlimited seats and uploads through ${cycleEndLabel}. Re-apply your code before then to keep it going.`
+                            : 'Loyalty access active — unlimited seats and uploads this cycle. Re-apply your code next cycle to keep it going.'}
+                    </p>
+                </div>
+                {onDismiss && (
+                    <button onClick={onDismiss} className="flex-shrink-0 text-white/60 hover:text-white">
+                        <X size={14} />
+                    </button>
+                )}
+            </div>
+        );
+    }
+
     if (!isFreeBaseline) return null;
     const message = "You're on the Free Baseline plan (up to 10 students, 2 teachers). Add seats anytime as your school grows.";
 
@@ -395,10 +470,47 @@ const FEATURE_VISUAL = {
     free: {
         label: 'Standard Plan',
         gradient: 'from-slate-500 to-slate-700',
+    },
+    loyalty: {
+        label: 'Loyalty Access',
+        gradient: 'from-amber-500 to-orange-500',
     }
 };
 
-export function LockedFeature({ featureName, requiredTier = 'custom', requiredAddon = null, onUpgrade }) {
+export function LockedFeature({ featureName, requiredTier = 'custom', requiredAddon = null, isLoyaltyActive, onUpgrade }) {
+    // A loyalty-active school gets every gated feature -- this is a
+    // defensive fallback in case a caller renders LockedFeature without
+    // first checking isFeatureAllowed(activeTier, ...) against a 'loyalty'
+    // tier. The real fix is making sure activeTier is set to 'loyalty'
+    // (or isFeatureAllowed short-circuits on it) upstream of this
+    // component, since that governs whether LockedFeature gets rendered
+    // at all -- this component can't retroactively grant access to
+    // whatever it's supposed to be gating, only reflect that it's unlocked.
+    if (isLoyaltyActive) {
+        const vis = FEATURE_VISUAL.loyalty;
+        return (
+            <div className="relative bg-white dark:bg-slate-800 rounded-2xl border border-amber-200 dark:border-amber-900/50 p-10 text-center overflow-hidden shadow-xs">
+                <div className="relative z-10 flex flex-col items-center gap-3 max-w-sm mx-auto">
+                    <div className="w-12 h-12 rounded-2xl bg-amber-50 dark:bg-amber-950/40 flex items-center justify-center shadow-xs">
+                        <Gift size={20} className="text-amber-500" />
+                    </div>
+
+                    <p className="text-sm font-black text-slate-800 dark:text-slate-100">
+                        {featureName}
+                    </p>
+
+                    <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                        Included with your active{' '}
+                        <span className={`font-black bg-gradient-to-r ${vis.gradient} bg-clip-text text-transparent`}>
+                            {vis.label}
+                        </span>
+                        {' '}— no upgrade needed this cycle.
+                    </p>
+                </div>
+            </div>
+        );
+    }
+
     // Determine key visual config based on add-on or tier requirement
     const key = requiredAddon || requiredTier;
     const vis = FEATURE_VISUAL[key] || {
@@ -649,8 +761,34 @@ export default function PrincipalDashboard({ principal }) {
 
     // ─── 5. TIER — needs schoolId, then usage ─────────────────────────────
     const { seats, examLimit, isFreeBaseline, loading: subLoading } = useCurrentSubscription(schoolId);
-    const limits = useLimitStatus(seats, examLimit, usage);
     const [auditLoading, setAuditLoading] = useState(false);
+    const [loyaltyStatus, setLoyaltyStatus] = useState(null);
+
+    // Add 'async' keyword
+    const getLoyaltyStatus = async () => {
+        if (!schoolId) return null; // Returns Promise.resolve(null)
+
+        try {
+            const docRef = doc(db, 'loyalty', schoolId);
+            const snap = await getDoc(docRef);
+            return snap.exists() ? snap.data() : null;
+        } catch (error) {
+            console.error('Failed to get status:', error);
+            return null;
+        }
+    };
+
+    useEffect(() => {
+        if (!schoolId) { setLoyaltyStatus(null); return; }
+        let active = true;
+        getLoyaltyStatus()
+            .then((status) => { if (active) setLoyaltyStatus(status); })
+            .catch((err) => console.error('Error loading loyalty status:', err));
+        return () => { active = false; };
+    }, [schoolId]);
+
+    const isLoyaltyActive = Boolean(loyaltyStatus?.active);
+    const limits = useLimitStatus(seats, examLimit, usage, isLoyaltyActive);
 
 
 
@@ -1033,28 +1171,31 @@ export default function PrincipalDashboard({ principal }) {
                     <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl p-3 space-y-2.5">
                         <p className="text-[10px] font-black text-slate-400 uppercase tracking-wider">Usage</p>
 
-                        {/* Using activeTier here ensures accurate limit calculation */}
                         <UsageMeter
                             label="Students"
                             used={students.length}
-                            limit={limits.students?.max ?? null}
+                            limit={isLoyaltyActive ? -1 : (limits.students?.max ?? null)}
+                            unlimited={isLoyaltyActive}
                             color={primary}
                         />
                         <UsageMeter
                             label="Exams"
                             used={exams.length}
-                            limit={limits.exams?.max ?? null}
+                            limit={isLoyaltyActive ? -1 : (limits.exams?.max ?? null)}
+                            unlimited={isLoyaltyActive}
                             color={primary}
                         />
                         <UsageMeter
                             label="Teachers"
                             used={teachers.length}
-                            limit={limits.teachers?.max ?? null}
+                            limit={isLoyaltyActive ? -1 : (limits.teachers?.max ?? null)}
+                            unlimited={isLoyaltyActive}
                             color={primary}
                         />
                     </div>
 
-                    {activeTier && activeTier !== 'enterprise' && (
+                    {/* Hide upgrade button when loyalty is active or on enterprise */}
+                    {!isLoyaltyActive && activeTier && activeTier !== 'enterprise' && (
                         <button
                             onClick={handleUpgrade}
                             className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-[10px] font-black text-white bg-gradient-to-r from-violet-600 to-indigo-600 hover:opacity-90 transition-opacity"
