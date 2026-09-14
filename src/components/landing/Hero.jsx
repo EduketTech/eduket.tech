@@ -1,4 +1,4 @@
-import { ArrowRight, KeyRound, Shield, Lock, Eye, CheckCircle2, Sparkles, HeartHandshake, Users, GraduationCap } from 'lucide-react'
+import { ArrowRight, KeyRound, Shield, Lock, Eye, CheckCircle2, Sparkles, HeartHandshake, Users, GraduationCap, Building2, TrendingUp } from 'lucide-react'
 import EditorCard from './EditorCard'
 
 const trustItems = [
@@ -19,20 +19,31 @@ export default function Hero({ onOpenModal }) {
     <section className="pt-[120px] pb-10 px-4 relative overflow-hidden">
       <div className="grid grid-cols-[1.05fr_0.95fr] gap-14 max-w-[1160px] mx-auto items-center max-[920px]:grid-cols-1">
 
+
+
         {/* Left column — text */}
         <div className="text-left">
 
-          {/* Badge */}
-          <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-[#1EA1FE]/10 border border-[#1EA1FE]/20 mb-2">
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#1EA1FE] opacity-75" />
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-[#1EA1FE]" />
-            </span>
-            <Sparkles size={12} className="text-[#1EA1FE]" />
-            <span className="font-plex-sans text-xs font-semibold text-[#1EA1FE]">
-              Africa's first AI-powered school & family OS
-            </span>
+
+          {/* 🌟 New Faint Pulsing Pilot / Trial Card for Schools */}
+          <div className="mb-4 inline-flex items-center gap-3 px-3.5 py-2 rounded-2xl bg-[#1EA1FE]/[0.06] border border-[#1EA1FE]/20 backdrop-blur-md animate-pulse">
+            <div className="w-7 h-7 rounded-xl bg-[#1EA1FE]/15 flex items-center justify-center text-[#1EA1FE] shrink-0">
+              <Building2 size={15} />
+            </div>
+            <div className="text-left pr-1">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] font-black uppercase tracking-wider text-[#1EA1FE]">School Trial Access</span>
+                <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-[#1EA1FE]/20 font-bold text-[#F3F6FB] border border-[#1EA1FE]/30">Zero Risk</span>
+              </div>
+              <p className="text-xs text-[#AEB7C7] font-medium leading-tight mt-0.5">
+                Start with <strong className="text-white font-semibold">1 class batch</strong> today. Scale across your school when satisfied!
+              </p>
+            </div>
+            <TrendingUp size={14} className="text-[#1EA1FE] shrink-0 hidden sm:block" />
           </div>
+
+          {/* Main Badge */}
+
 
           {/* Heading */}
           <h1
@@ -76,7 +87,7 @@ export default function Hero({ onOpenModal }) {
               onClick={onOpenModal}
               className="inline-flex items-center justify-center gap-2 px-7 py-3.5 rounded-xl bg-[#1EA1FE] hover:bg-[#4BB8FF] text-[#0A0D14] font-bold text-[15px] shadow-lg shadow-[#1EA1FE]/20 transition-all hover:-translate-y-0.5"
             >
-              Start for free <ArrowRight size={16} />
+              Start Batch Trial <ArrowRight size={16} />
             </button>
             <button
               onClick={onOpenModal}
