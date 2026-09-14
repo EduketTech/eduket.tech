@@ -487,11 +487,17 @@ function AttemptCard({ attempt, teacherMode, onRemark, displayName }) {
             {/* Teacher mode — student name banner */}
             {teacherMode && attempt.studentId && (
                 <div className="flex items-center gap-2 px-5 py-2 bg-indigo-50 dark:bg-indigo-900/20 border-b border-indigo-100 dark:border-indigo-800">
-                    <div className="w-5 h-5 rounded-full bg-indigo-200 dark:bg-indigo-800 flex items-center justify-center text-[9px] font-black text-indigo-700 dark:text-indigo-200 flex-shrink-0">
-                        {attempt.studentId[0]?.toUpperCase()}
-                    </div>
-                    <span className="text-xs font-bold text-indigo-600 dark:text-indigo-300">{attempt.studentId}</span>
-
+                    {(() => {
+                        const studentName = attempt.studentName || attempt.studentDisplayName || attempt.userName || attempt.name || attempt.studentId || 'Student';
+                        return (
+                            <div className="flex items-center gap-1.5">
+                                <div className="w-5 h-5 rounded-full bg-indigo-200 dark:bg-indigo-800 flex items-center justify-center text-[9px] font-black text-indigo-700 dark:text-indigo-200 flex-shrink-0">
+                                    {studentName[0]?.toUpperCase()}
+                                </div>
+                                <span className="text-xs font-bold text-indigo-600 dark:text-indigo-300">{studentName}</span>
+                            </div>
+                        );
+                    })()}
                     {/* Remarked badge */}
                     {isRemarked && (
                         <span className="ml-auto flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">

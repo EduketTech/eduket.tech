@@ -1419,7 +1419,7 @@ export default function TeacherDashboard(props) {
                         </span>
                       </div>
                       <div className="flex items-center gap-4 text-xs font-semibold text-slate-400">
-                        <span>Grade {exam.grade}</span>
+                        <span>{exam.grade}</span>
                         <span>•</span>
                         <span>{exam.curriculum}</span>
                         <span>•</span>
