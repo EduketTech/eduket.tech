@@ -22,7 +22,7 @@ import {
     ChevronDown, ChevronRight, Filter, Download, Printer, LogOut,
     Search, X, Eye, BarChart2, CheckCircle2, Clock,
     School, Settings, Moon, Sun, Menu, Zap, Lock, ArrowUpRight,
-    Sparkles, Crown, Star, CreditCard, ChevronLeft, Shield, GraduationCap, RefreshCw, UserCheck, UserX, HeartHandshake, Phone, Mail,
+    Sparkles, Crown, Star, CreditCard, ChevronLeft, Shield, GraduationCap, RefreshCw, UserCheck, UserX, HeartHandshake, Phone, Mail, Gift
 } from 'lucide-react';
 import PaymentManager from './PaymentManager';
 import SubscriptionManager from './SubscriptionManager';
@@ -249,17 +249,22 @@ export function StatCard({ label, value, sub, icon: Icon, color = 'indigo' }) {
 // Gift -- add it to the existing lucide-react import line at the top of
 // this file: `import { ..., Gift } from 'lucide-react';`
 
-export function UsageMeter({ label, used = 0, limit = 10, color = '#4f46e5', unlimited = false }) {
-    // Loyalty (and any other unlimited-access state) is signaled either by
-    // the explicit `unlimited` prop, or by the backend's own "unlimited"
-    // sentinels: `limit == null` (pricing.py's monthly_upload_limit=None)
-    // or `limit === -1` (app.py/tier_limits.py's check_school_exam_quota
-    // convention). Checking all three means this component works whether
-    // the caller passes the raw API value straight through or has already
-    // normalized it.
+export function UsageMeter({
+    label,
+    used = 0,
+    limit = 10,
+    color = '#4f46e5',
+    unlimited = false,
+    isFreeBaseline = false,
+    isLoyaltyActive = false
+}) {
+    // Treat as unlimited if explicitly set or if backend sent unlimited sentinels
     const isUnlimited = unlimited || limit === null || limit === undefined || limit === -1;
 
-    if (isUnlimited) {
+    // Suppress limit warnings and critical styling for Free Baseline & Loyalty tiers
+    const suppressLimitWarnings = isLoyaltyActive || isFreeBaseline;
+
+    if (isUnlimited || suppressLimitWarnings) {
         return (
             <div className="space-y-1.5">
                 <div className="flex items-center justify-between text-xs">
@@ -267,34 +272,40 @@ export function UsageMeter({ label, used = 0, limit = 10, color = '#4f46e5', unl
                         {label}
                     </span>
                     <div className="flex items-center">
-                        <span className="tabular-nums text-amber-600 dark:text-amber-400 font-bold">
-                            {Math.max(0, Number(used) || 0).toLocaleString()} used
+                        <span className="tabular-nums text-slate-600 dark:text-slate-300 font-semibold">
+                            {Math.max(0, Number(used) || 0).toLocaleString()} {isUnlimited ? 'used' : `/ ${Number(limit).toLocaleString()}`}
                         </span>
-                        <span className="text-[10px] uppercase font-bold tracking-wider bg-amber-100 dark:bg-amber-950/60 text-amber-600 dark:text-amber-300 px-1.5 py-0.5 rounded ml-1.5">
-                            Unlimited
-                        </span>
+                        {isUnlimited && (
+                            <span className="text-[10px] uppercase font-bold tracking-wider bg-amber-100 dark:bg-amber-950/60 text-amber-600 dark:text-amber-300 px-1.5 py-0.5 rounded ml-1.5">
+                                Unlimited
+                            </span>
+                        )}
                     </div>
                 </div>
-                <div className="h-2 w-full bg-amber-100 dark:bg-amber-950/40 rounded-full overflow-hidden relative">
-                    <div className="h-full w-full rounded-full bg-gradient-to-r from-amber-400 to-amber-500" />
+                <div className="h-2 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden relative">
+                    <div
+                        className="h-full rounded-full transition-all duration-500 ease-out bg-indigo-500"
+                        style={{
+                            width: isUnlimited
+                                ? '100%'
+                                : `${Math.min(100, Math.max(0, (used / (limit || 1)) * 100))}%`
+                        }}
+                    />
                 </div>
             </div>
         );
     }
 
-    // 1. Ensure clean numerical inputs (no unlimited / null fallbacks)
+    // Standard meter for custom paid plans (shows near-limit amber and exceeded red states)
     const safeLimit = Math.max(1, Number(limit) || 10);
     const safeUsed = Math.max(0, Number(used) || 0);
 
-    // 2. Compute percentage values
     const rawPercentage = (safeUsed / safeLimit) * 100;
     const clampedPercentage = Math.min(100, rawPercentage);
 
-    // 3. Status flags based on quota consumption
     const isNearLimit = rawPercentage >= 80 && rawPercentage < 100;
     const isAtOrExceeded = rawPercentage >= 100;
 
-    // 4. Dynamic bar color & text styling based on usage severity
     let barStyle = { backgroundColor: color };
     let textStyleClass = 'text-slate-600 dark:text-slate-300 font-medium';
     let statusBadge = null;
@@ -330,7 +341,6 @@ export function UsageMeter({ label, used = 0, limit = 10, color = '#4f46e5', unl
                 </div>
             </div>
 
-            {/* Progress Bar Container */}
             <div
                 className="h-2 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden relative"
                 role="progressbar"
@@ -351,11 +361,7 @@ export function UsageMeter({ label, used = 0, limit = 10, color = '#4f46e5', unl
     );
 }
 
-
 export function TierBadge({ tierId, isFreeBaseline, isLoyaltyActive, collapsed }) {
-    // Loyalty takes precedence over both free-baseline and custom-plan
-    // framing -- a school mid-loyalty-cycle isn't "free" in the trial
-    // sense and isn't paying for a custom plan either.
     const isLoyalty = isLoyaltyActive || tierId === 'loyalty';
     const isFree = !isLoyalty && (isFreeBaseline ?? (tierId === 'free' || tierId === 'free_tier'));
 
@@ -391,10 +397,7 @@ export function TierBadge({ tierId, isFreeBaseline, isLoyaltyActive, collapsed }
 }
 
 export function UpgradeBanner({ isFreeBaseline, isLoyaltyActive, loyaltyCycleEnd, onUpgrade, onDismiss }) {
-    // Loyalty-active schools see a status banner instead of an upgrade
-    // pitch -- pushing "Manage Seats" at a school that's already getting
-    // full access for free reads as either confusing or actively
-    // undermining the loyalty offer.
+    // Loyalty tier active: show loyalty status banner with expiry details
     if (isLoyaltyActive) {
         const cycleEndLabel = loyaltyCycleEnd
             ? new Date(loyaltyCycleEnd).toLocaleDateString('en-ZA', { day: 'numeric', month: 'short', year: 'numeric' })
@@ -425,31 +428,10 @@ export function UpgradeBanner({ isFreeBaseline, isLoyaltyActive, loyaltyCycleEnd
         );
     }
 
-    if (!isFreeBaseline) return null;
-    const message = "You're on the Free Baseline plan (up to 10 students, 2 teachers). Add seats anytime as your school grows.";
+    // Free Baseline or active paid sub: hide upgrade prompt entirely if free/loyalty limit suppression is expected
+    if (isFreeBaseline) return null;
 
-    return (
-        <div className="relative bg-gradient-to-r from-violet-600 to-indigo-600 rounded-2xl p-4 flex items-center gap-3 overflow-hidden print:hidden">
-            <div className="absolute inset-0 opacity-10">
-                <div className="absolute -top-4 -right-4 w-32 h-32 rounded-full bg-white" />
-                <div className="absolute -bottom-8 right-20 w-24 h-24 rounded-full bg-white" />
-            </div>
-            <div className="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center flex-shrink-0">
-                <Zap size={16} className="text-white" />
-            </div>
-            <div className="flex-1 min-w-0">
-                <p className="text-[11px] font-black text-black leading-snug">{message}</p>
-            </div>
-            <button onClick={onUpgrade} className="flex-shrink-0 flex items-center gap-1 bg-white text-indigo-700 text-[10px] font-black px-3 py-2 rounded-xl hover:bg-indigo-50 transition-colors">
-                Manage Seats <ArrowUpRight size={11} />
-            </button>
-            {onDismiss && (
-                <button onClick={onDismiss} className="flex-shrink-0 text-white/60 hover:text-white">
-                    <X size={14} />
-                </button>
-            )}
-        </div>
-    );
+    return null;
 }
 
 
@@ -760,7 +742,7 @@ export default function PrincipalDashboard({ principal }) {
     }), [students.length, exams.length, teachers.length]);
 
     // ─── 5. TIER — needs schoolId, then usage ─────────────────────────────
-    const { seats, examLimit, isFreeBaseline, loading: subLoading } = useCurrentSubscription(schoolId);
+    // const { seats, examLimit, isFreeBaseline, loading: subLoading } = useCurrentSubscription(schoolId);
     const [auditLoading, setAuditLoading] = useState(false);
     const [loyaltyStatus, setLoyaltyStatus] = useState(null);
 
@@ -778,17 +760,51 @@ export default function PrincipalDashboard({ principal }) {
         }
     };
 
+    // 1. Extract base school object safely
+    // 1. Extract base school object safely (handles snapshot or plain object)
+    const schoolData = typeof school?.data === 'function' ? school.data() : (school || {});
+    const loyalty = schoolData?.loyaltySubscription || {};
+
+    // 2. Resolve loyalty cycle end date
+    const rawCycleEnd = loyalty.cycleEnd;
+    let loyaltyCycleEnd = null;
+
+    if (rawCycleEnd?.seconds) {
+        loyaltyCycleEnd = new Date(rawCycleEnd.seconds * 1000);
+    } else if (rawCycleEnd?.toDate && typeof rawCycleEnd.toDate === 'function') {
+        loyaltyCycleEnd = rawCycleEnd.toDate();
+    } else if (rawCycleEnd) {
+        loyaltyCycleEnd = new Date(rawCycleEnd);
+    }
+
+    // 3. Determine active loyalty status
+    const isLoyaltyActive = Boolean(
+        loyalty.active && (!loyaltyCycleEnd || loyaltyCycleEnd > new Date())
+    );
+    const isFreeBaseline = !isLoyaltyActive && (schoolData?.tier === 'free' || !schoolData?.tier);
+
+    // 4. Resolve seats, exam limits, and usage values BEFORE calling the custom hook
+    const seats = schoolData?.studentCount ?? 0;
+    const examLimit = schoolData?.examLimit ?? schoolData?.maxExams ?? null;
+    // 5. Invoke custom hook after ALL arguments are defined
+    const limits = useLimitStatus(seats, examLimit, usage, isLoyaltyActive);
+
+    // 6. Asynchronous loyalty lookup effect
     useEffect(() => {
-        if (!schoolId) { setLoyaltyStatus(null); return; }
+        if (!schoolId) {
+            setLoyaltyStatus(null);
+            return;
+        }
         let active = true;
         getLoyaltyStatus()
-            .then((status) => { if (active) setLoyaltyStatus(status); })
+            .then((status) => {
+                if (active) setLoyaltyStatus(status);
+            })
             .catch((err) => console.error('Error loading loyalty status:', err));
-        return () => { active = false; };
+        return () => {
+            active = false;
+        };
     }, [schoolId]);
-
-    const isLoyaltyActive = Boolean(loyaltyStatus?.active);
-    const limits = useLimitStatus(seats, examLimit, usage, isLoyaltyActive);
 
 
 
@@ -1911,79 +1927,125 @@ export default function PrincipalDashboard({ principal }) {
                     )}
 
                     {/* ── SETTINGS TAB ── */}
-                    {activeTab === 'settings' && (
-                        <div className="space-y-4">
-                            <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 p-5">
-                                <h2 className="text-sm font-black text-slate-800 dark:text-white mb-1">School Settings</h2>
-                                <p className="text-xs text-slate-500 mb-5">Update your school's branding and information.</p>
-                                <button
-                                    className="px-5 py-2.5 rounded-xl text-white text-xs font-black"
-                                    style={{ backgroundColor: primary }}
-                                    onClick={() => navigate('/school-registration')}
-                                >
-                                    Edit School Profile →
-                                </button>
-                                <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                    {[
-                                        ['School Name', school?.name],
-                                        ['Country', school?.country],
-                                        ['Motto', school?.motto],
-                                        ['Established', school?.established],
-                                        ['Province', school?.province],
-                                        ['District', school?.district],
-                                        ['Curricula', (school?.curricula || []).join(', ')],
-                                    ].map(([label, value]) => (
-                                        <div key={label} className="p-3 bg-slate-50 dark:bg-slate-700 rounded-xl">
-                                            <p className="text-[9px] font-black text-slate-400 uppercase tracking-wider">{label}</p>
-                                            <p className="text-xs font-bold text-slate-800 dark:text-white mt-1">{value || '—'}</p>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
+                    {activeTab === 'settings' && (() => {
+                        // 1. Safe extraction whether school is a Snapshot or Plain Object
+                        const schoolData = typeof school?.data === 'function' ? school.data() : (school || {});
+                        const loyalty = schoolData?.loyaltySubscription || {};
 
-                            {/* ✅ Settings also shows limit alerts */}
-                            <LimitAlertBanner resource="students" label="Students" info={limits.students} onUpgrade={handleUpgrade} />
-                            <LimitAlertBanner resource="exams" label="Exams" info={limits.exams} onUpgrade={handleUpgrade} />
-                            <LimitAlertBanner resource="teachers" label="Teachers" info={limits.teachers} onUpgrade={handleUpgrade} />
+                        // 2. Parse loyalty cycleEnd timestamp securely
+                        const rawCycleEnd = loyalty.cycleEnd;
+                        let cycleEndDate = null;
+                        if (rawCycleEnd?.seconds) {
+                            cycleEndDate = new Date(rawCycleEnd.seconds * 1000);
+                        } else if (rawCycleEnd?.toDate && typeof rawCycleEnd.toDate === 'function') {
+                            cycleEndDate = rawCycleEnd.toDate();
+                        } else if (rawCycleEnd) {
+                            cycleEndDate = new Date(rawCycleEnd);
+                        }
 
-                            {/* Quick plan card */}
-                            <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 p-5">
-                                <div className="flex items-center justify-between mb-4">
-                                    <div>
-                                        <h2 className="text-sm font-black text-slate-800 dark:text-white">Plan & Billing</h2>
-                                        <p className="text-xs text-slate-400 mt-0.5">Manage subscription and usage.</p>
+                        // 3. Determine active subscription state
+                        const isLoyaltyActive = Boolean(
+                            loyalty.active && (!cycleEndDate || cycleEndDate > new Date())
+                        );
+                        const isFreeBaseline = !isLoyaltyActive && (schoolData?.tier === 'free' || !schoolData?.tier);
+
+                        // Fallbacks for school attributes based on your Firestore document schema
+                        const schoolName = schoolData?.schoolName || schoolData?.name;
+                        const curriculumVal = Array.isArray(schoolData?.curricula)
+                            ? schoolData.curricula.join(', ')
+                            : (schoolData?.curriculum || '—');
+
+                        return (
+                            <div className="space-y-4">
+                                {/* School Profile Summary Card */}
+                                <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 p-5">
+                                    <h2 className="text-sm font-black text-slate-800 dark:text-white mb-1">School Settings</h2>
+                                    <p className="text-xs text-slate-500 mb-5">Update your school's branding and information.</p>
+                                    <button
+                                        className="px-5 py-2.5 rounded-xl text-white text-xs font-black"
+                                        style={{ backgroundColor: primary }}
+                                        onClick={() => navigate('/school-registration')}
+                                    >
+                                        Edit School Profile →
+                                    </button>
+                                    <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                        {[
+                                            ['School Name', schoolName],
+                                            ['Institution Type', schoolData?.institutionType],
+                                            ['Country', schoolData?.country],
+                                            ['Motto', schoolData?.motto],
+                                            ['Established', schoolData?.established],
+                                            ['Province', schoolData?.province],
+                                            ['District', schoolData?.district],
+                                            ['Curriculum', curriculumVal],
+                                        ].map(([label, value]) => (
+                                            <div key={label} className="p-3 bg-slate-50 dark:bg-slate-700 rounded-xl">
+                                                <p className="text-[9px] font-black text-slate-400 uppercase tracking-wider">{label}</p>
+                                                <p className="text-xs font-bold text-slate-800 dark:text-white mt-1">{value || '—'}</p>
+                                            </div>
+                                        ))}
                                     </div>
-                                    <TierBadge tier={activeTier} collapsed={false} />
                                 </div>
-                                <div className="bg-slate-50 dark:bg-slate-700/50 rounded-xl p-4 space-y-3 mb-4">
-                                    <UsageMeter
-                                        label="Students"
-                                        used={students.length}
-                                        limit={limits.students?.max ?? null}
-                                        color={primary}
-                                    />
-                                    <UsageMeter
-                                        label="Exams"
-                                        used={exams.length}
-                                        limit={limits.exams?.max ?? null}
-                                        color={primary}
-                                    />
-                                    <UsageMeter
-                                        label="Teachers"
-                                        used={teachers.length}
-                                        limit={limits.teachers?.max ?? null}
-                                        color={primary}
-                                    />
+
+                                {/* ✅ Limit alerts only rendered for paid plans with restricted quotas */}
+                                {!isLoyaltyActive && !isFreeBaseline && (
+                                    <>
+                                        <LimitAlertBanner resource="students" label="Students" info={limits.students} onUpgrade={handleUpgrade} />
+                                        <LimitAlertBanner resource="exams" label="Exams" info={limits.exams} onUpgrade={handleUpgrade} />
+                                        <LimitAlertBanner resource="teachers" label="Teachers" info={limits.teachers} onUpgrade={handleUpgrade} />
+                                    </>
+                                )}
+
+                                {/* Plan & Billing Section */}
+                                <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 p-5">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <div>
+                                            <h2 className="text-sm font-black text-slate-800 dark:text-white">Plan & Billing</h2>
+                                            <p className="text-xs text-slate-400 mt-0.5">Manage subscription and usage.</p>
+                                        </div>
+                                        <TierBadge
+                                            tierId={schoolData?.tier}
+                                            isFreeBaseline={isFreeBaseline}
+                                            isLoyaltyActive={isLoyaltyActive}
+                                            collapsed={false}
+                                        />
+                                    </div>
+                                    <div className="bg-slate-50 dark:bg-slate-700/50 rounded-xl p-4 space-y-3 mb-4">
+                                        <UsageMeter
+                                            label="Students"
+                                            used={students.length}
+                                            limit={limits.students?.max ?? null}
+                                            color={primary}
+                                            isFreeBaseline={isFreeBaseline}
+                                            isLoyaltyActive={isLoyaltyActive}
+                                        />
+                                        <UsageMeter
+                                            label="Exams"
+                                            used={exams.length}
+                                            limit={limits.exams?.max ?? null}
+                                            color={primary}
+                                            isFreeBaseline={isFreeBaseline}
+                                            isLoyaltyActive={isLoyaltyActive}
+                                        />
+                                        <UsageMeter
+                                            label="Teachers"
+                                            used={teachers.length}
+                                            limit={limits.teachers?.max ?? null}
+                                            color={primary}
+                                            isFreeBaseline={isFreeBaseline}
+                                            isLoyaltyActive={isLoyaltyActive}
+                                        />
+                                    </div>
+                                    <button
+                                        onClick={() => setActiveTab('subscriptions')}
+                                        className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-white text-xs font-black bg-gradient-to-r from-violet-600 to-indigo-600 hover:opacity-90 transition-opacity"
+                                    >
+                                        <CreditCard size={13} /> Manage Subscriptions
+                                    </button>
                                 </div>
-                                <button
-                                    onClick={() => setActiveTab('subscriptions')}
-                                    className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-white text-xs font-black bg-gradient-to-r from-violet-600 to-indigo-600 hover:opacity-90 transition-opacity"
-                                >
-                                    <CreditCard size={13} /> Manage Subscriptions
-                                </button>
                             </div>
-                        </div>
-                    )}
+                        );
+                    })()}
                 </div>
 
                 {/* ── MOBILE BOTTOM NAV ── */}
