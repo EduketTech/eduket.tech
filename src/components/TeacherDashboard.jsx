@@ -1184,7 +1184,7 @@ export default function TeacherDashboard(props) {
                         {Array.isArray(levels) &&
                           levels.map((lvl) => (
                             <option key={lvl.id || lvl} value={lvl.id || lvl}>
-                              {lvl.name || `Grade ${lvl}`}
+                              {lvl.name || `${lvl}`}
                             </option>
                           ))}
                       </select>

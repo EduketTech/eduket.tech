@@ -492,7 +492,7 @@ function App() {
                     </span>
                     <span className="text-[10px] text-gray-500 capitalize">
                       {displayRole === 'student' && displayGrade
-                        ? `Grade ${displayGrade}`
+                        ? `${displayGrade}`
                         : displayRole}
                     </span>
                   </div>
@@ -569,7 +569,7 @@ function App() {
                             Current Grade
                           </p>
                           <p className="text-xl font-bold dark:text-gray-100">
-                            {studentInfo?.grade ? `Grade ${studentInfo.grade}` : 'N/A'}
+                            {studentInfo?.grade ? `${studentInfo.grade}` : 'N/A'}
                           </p>
                         </div>
 

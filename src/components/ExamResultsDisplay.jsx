@@ -338,7 +338,7 @@ const LegacyResultCard = ({ res, expandedId, setExpandedId }) => {
           <div>
             <h3 className="font-black text-[11px] text-gray-900">{res.exam}</h3>
             <p className="text-[9px] uppercase font-bold text-gray-400">
-              Grade {res.grade || res.gradeYear} · {res.completedTime}
+              {res.grade || res.gradeYear} · {res.completedTime}
             </p>
           </div>
         </div>

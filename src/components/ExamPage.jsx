@@ -12,6 +12,7 @@ import { ResultsTab } from './ResultsTab';
 
 
 
+const API = import.meta.env.VITE_API_URL;
 
 // SweetAlert2 Configuration
 const swal = Swal.mixin({
@@ -89,6 +90,21 @@ function AssignmentDueStrip({ dueDate }) {
 export default function ExamPage({ studentInfo, addResult, setStudentInfo, isDark, toggleTheme }) {
   const navigate = useNavigate();
 
+  const [started, setStarted] = useState(false);
+  const [sessionId, setSessionId] = useState(null);
+  const [examDurationSeconds, setExamDurationSeconds] = useState(3600);
+  const [timerKey, setTimerKey] = useState(0);
+  const [timeExpired, setTimeExpired] = useState(false);
+  const [skipped, setSkipped] = useState(new Set());
+  const [agentReply, setAgentReply] = useState("");
+  const [totalQ, setTotalQ] = useState(0);
+  const [question, setQuestion] = useState(null);
+  const [index, setIndex] = useState(0);
+  // At the top of your component:
+  const sessionIdRef = useRef(null);
+
+
+
   // Exam Logic State
   const [selectedExam, setSelectedExam] = useState(null);
   const [authenticated, setAuthenticated] = useState(false);
@@ -124,7 +140,75 @@ export default function ExamPage({ studentInfo, addResult, setStudentInfo, isDar
     }
   });
   const studentName = studentInfo?.name;
+  // ─── NEW STATE: track this student's completed attempts ──────────────────
+  // Keyed by exam title, since that's what actuallySubmitExam() stores on
+  // the examResults doc (result.exam = selectedExam.title) -- there's no
+  // examId field on that document to key by instead.
+  const [attemptedMap, setAttemptedMap] = useState({});
+  const [loading, setLoading] = useState(false);
 
+  // ─── LISTEN FOR THIS STUDENT'S PAST ATTEMPTS ──────────────────────────────
+  useEffect(() => {
+    if (!user?.uid) return;
+
+    const q = query(
+      collection(db, "examResults"),
+      where("studentId", "==", user.uid)
+    );
+
+    const unsub = onSnapshot(q, (snap) => {
+      const map = {};
+      snap.docs.forEach((doc) => {
+        const data = doc.data();
+        const title = data.exam;
+        if (!title) return;
+        // Keep the most recent attempt per exam title.
+        const existing = map[title];
+        if (!existing || (data.completedTime || "") > (existing.completedTime || "")) {
+          map[title] = {
+            completedTime: data.completedTime || null,
+            percentage: data.percentage,
+            score: data.score,
+            total: data.total,
+          };
+        }
+      });
+      setAttemptedMap(map);
+    });
+
+    return () => unsub();
+  }, [user?.uid]);
+
+  // ─── SPLIT INTO PENDING vs ALREADY-ATTEMPTED ──────────────────────────────
+  const pendingExams = dynamicExams.filter((exam) => !attemptedMap[exam.title]);
+  const completedExams = dynamicExams.filter((exam) => attemptedMap[exam.title]);
+
+  // ─── FORMAT UPLOAD TIME ────────────────────────────────────────────────────
+  const formatUploadTime = (iso) => {
+    if (!iso) return "Unknown time";
+    try {
+      return new Date(iso).toLocaleString("en-ZA", {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    } catch {
+      return "Unknown time";
+    }
+  };
+
+  // Helper function to standardize question types from backend
+  const normalizeType = (type) => {
+    if (!type) return "mcq";
+    const str = String(type).toLowerCase().trim();
+    if (str.includes("mcq") || str.includes("multiple")) return "mcq";
+    if (str.includes("true") || str.includes("false")) return "true_false";
+    if (str.includes("match")) return "matching";
+    if (str.includes("fill") || str.includes("blank")) return "fill_in_the_blank";
+    return str;
+  };
 
 
   // ─── AUTH & PROFILE SYNC ──────────────────────────────────────────────
@@ -332,7 +416,7 @@ export default function ExamPage({ studentInfo, addResult, setStudentInfo, isDar
 
   // ─── ACTUAL EXAM SUBMISSION (FIREBASE) ───────────────────────────────  
   const handleSubmitExam = () => {
-    const qs = questions[selectedExam.title] || [];
+    const qs = selectedExam?.question || [];
     const missing = qs.filter((q) => !answers[q.id]);
 
     // Check if this is an assignment or an exam
@@ -362,7 +446,7 @@ export default function ExamPage({ studentInfo, addResult, setStudentInfo, isDar
     isSubmittingRef.current = true;
     setSubmitted(true);
 
-    const qs = questions[selectedExam.title] || [];
+    const qs = selectedExam?.question || [];
     let score = 0;
 
     // Calculate accurate score based on answers locked in up to this point
@@ -382,7 +466,7 @@ export default function ExamPage({ studentInfo, addResult, setStudentInfo, isDar
 
     const result = {
       studentId: user?.uid,
-      name: studentInfo.name,
+      name: studentInfo.firstName,
       grade: studentInfo.grade,
       exam: selectedExam.title,
       assessmentType: isAssignment ? 'assignment' : 'exam',
@@ -400,7 +484,7 @@ export default function ExamPage({ studentInfo, addResult, setStudentInfo, isDar
       await addDoc(collection(db, "examResults"), result);
 
       // Increment localStorage tracking entries smoothly
-      const key = `${studentInfo.name}_${selectedExam.title}_attempts`;
+      const key = `${studentInfo.firstName}_${selectedExam.title}_attempts`;
       localStorage.setItem(key, String(parseInt(localStorage.getItem(key) || "0") + 1));
 
       // Tailor sweetalert configurations to match context status
@@ -540,26 +624,154 @@ export default function ExamPage({ studentInfo, addResult, setStudentInfo, isDar
     return () => unsub();
   }, [user, studentInfo, isDark, seenExams]);
 
-  // Helper to handle both Static (Quiz) and Dynamic (PDF) exams
-  const handleStartExam = (exam) => {
-    if (exam.isDynamic) {
-      // It's a teacher upload (PDF/Drive)
-      swal.fire({
-        title: exam.title,
-        text: `This is a past paper uploaded by ${exam.teacherName}. Would you like to open the PDF?`,
-        icon: "question",
-        showCancelButton: true,
-        confirmButtonText: "Open Paper",
-        cancelButtonText: "Cancel"
-      }).then(res => {
-        if (res.isConfirmed) window.open(exam.examDriveLink, "_blank");
+
+  const startExam = async (overrideExamId) => {
+    const user = auth.currentUser;
+
+    if (!user) {
+      alert("Session expired. Please sign in again.");
+      return;
+    }
+
+    // Fall back to state if no override parameter was provided
+    const targetExam = overrideExamId || selectedExam;
+    const examId = typeof targetExam === "string" ? targetExam : targetExam?.id;
+
+    if (!examId) {
+      alert("Invalid exam selected");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const token = await user.getIdToken(true);
+
+      const res = await fetch(`${API}/start_exam`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({ exam_id: examId })
       });
-    } else {
-      // It's a static interactive quiz
-      handleSelectExam(exam);
+
+      const data = await res.json();
+
+      if (data.error) throw new Error(data.error);
+      if (!data.questions || data.questions.length === 0) {
+        throw new Error("No questions returned from server");
+      }
+
+      const normalized = data.questions.map((q, idx) => ({
+        ...q,
+        id: q.id || `q_${idx}`,
+        text: q.question,
+        type: q.type ? String(q.type).toLowerCase() : "mcq", // 👈 Fallback inline
+        marks: q.marks || 1,
+        options: q.options || [],
+        section: q.section || "Section A",
+        order: idx,
+        questionLatex: q.question_latex || null,
+        questionTable: q.question_table || null,
+        parentContext: q.parent_context || null,
+        parentQuestion: q.parent_question || null,
+        columnA: q.column_a || null,
+        columnB: q.column_b || null,
+        hasVisual: q.has_visual || false,
+      }));
+
+      window.__examQuestions = normalized;
+      answers.current = {};
+
+      setSessionId(sessionIdRef.current = data.session_id);
+      setExamDurationSeconds((data.exam_duration_minutes || 60) * 60);
+
+      setTimerKey((k) => k + 1);
+      setTimeExpired(false);
+      setAnswers({});
+      setSkipped(new Set());
+      setAgentReply("");
+      setTotalQ(normalized.length);
+      setQuestion(normalized[0]);
+      setIndex(0);
+      setStarted(true); // 🚀 Triggers active exam view
+    } catch (err) {
+      console.error("[startExam] ❌ error:", err.message);
+      swal.fire("Error", err.message || "Failed to start exam", "error");
+    } finally {
+      setLoading(false);
     }
   };
+
+  // Helper to handle both Static (Quiz) and Dynamic (PDF) exams
+  const handleStartExam = async (exam) => {
+    const examId = exam?.id || exam;
+
+    if (!examId) {
+      swal.fire({
+        title: "Error",
+        text: "Invalid exam selected.",
+        icon: "error"
+      });
+      return;
+    }
+
+    // Update selected exam state
+    setSelectedExam(examId);
+
+    // If the paper has a direct drive link AND you still want students to have the choice,
+    // prompt them, or launch the interactive runner directly:
+    if (exam.isDynamic && exam.examDriveLink) {
+      const res = await swal.fire({
+        title: exam.title || "Start Assessment",
+        text: `Do you want to take this interactive exam on Eduket, or open the reference PDF?`,
+        icon: "question",
+        showCancelButton: true,
+        showDenyButton: true,
+        confirmButtonText: "▶ Take Interactive Exam",
+        denyButtonText: "📄 View PDF",
+        cancelButtonText: "Cancel"
+      });
+
+      if (res.isConfirmed) {
+        // Launch interactive exam runner in-app
+        await startExam(examId);
+      } else if (res.isDenied) {
+        // Open raw PDF reference
+        window.open(exam.examDriveLink, "_blank");
+      }
+    } else {
+      // Standard interactive exam/quiz — launch immediately
+      await startExam(examId);
+    }
+  };
+
   const newExams = dynamicExams.filter(exam => !seenExams.includes(exam.id));
+
+  // Helper for Date badge - NEW OR OLDER
+  const getExamBadge = (uploadedAt) => {
+    if (!uploadedAt) return { label: "OLDER", color: "text-gray-500 bg-gray-200 dark:bg-gray-700 dark:text-gray-300" };
+
+    // Handle Firestore Timestamp or standard ISO/Date formats
+    const uploadDate = uploadedAt?.toDate ? uploadedAt.toDate() : new Date(uploadedAt);
+    const now = new Date();
+
+    // Calculate difference in days
+    const diffInDays = (now - uploadDate) / (1000 * 60 * 60 * 24);
+
+    if (diffInDays <= 3) {
+      return {
+        label: "NEW",
+        color: "text-indigo-600 bg-indigo-100 dark:bg-indigo-900/50 dark:text-indigo-300",
+      };
+    }
+
+    return {
+      label: "OLDER",
+      color: "text-gray-500 bg-gray-100 dark:bg-gray-800 dark:text-gray-400",
+    };
+  };
 
 
   return (
@@ -570,18 +782,18 @@ export default function ExamPage({ studentInfo, addResult, setStudentInfo, isDar
         <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-4 w-1/3">
             <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white font-bold shadow-lg">
-              {studentInfo?.name?.[0]}
+              {studentInfo?.firstName?.[0]}
             </div>
             <div className="hidden sm:block">
               <p className="text-xs font-bold text-gray-500 uppercase tracking-widest">Student Portal</p>
-              <h2 className="text-sm font-black dark:text-white leading-none">{studentInfo?.name} - {studentInfo?.grade}</h2>
+              <h2 className="text-sm font-black dark:text-white leading-none">{studentInfo?.firstName} - {studentInfo?.grade}</h2>
             </div>
           </div>
 
           <div className="w-1/3 flex justify-center">
             <button onClick={() => setShowTutor(true)} className="flex items-center gap-2 px-4 py-2 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 rounded-xl font-bold border border-indigo-100 dark:border-indigo-800 hover:bg-indigo-600 hover:text-white transition-all">
               <Sparkles size={18} />
-              <span className="text-sm">AI Learning Hub</span>
+              <span className="text-sm">Check Exam Here!</span>
             </button>
           </div>
 
@@ -606,7 +818,7 @@ export default function ExamPage({ studentInfo, addResult, setStudentInfo, isDar
             <div className="flex items-center gap-3">
               <Sparkles className="text-indigo-600" size={24} />
               <h2 className="text-xl font-black dark:text-white uppercase tracking-tighter">
-                AI Learning Hub
+                Check Exam Here!
               </h2>
             </div>
             {/* Only allow closing if no active tool OR confirm exit */}
@@ -654,7 +866,7 @@ export default function ExamPage({ studentInfo, addResult, setStudentInfo, isDar
                   </div>
                   <div>
                     <h4 className="text-lg font-black text-green-700 dark:text-green-300 mb-1">
-                      AI Exam
+                      Assessments / Assignments
                     </h4>
                     <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed">
                       Attempt a teacher uploaded exam or assignment and get it AI-marked or memoised under timed conditions.
@@ -717,39 +929,82 @@ export default function ExamPage({ studentInfo, addResult, setStudentInfo, isDar
         </main>
       )}
 
-      {/* ─── NEW: TEACHER UPLOAD SECTION ─── */}
-      {examView === "new" && newExams.length > 0 && (
+      {/* ─── PENDING: NOT YET ATTEMPTED ─── */}
+      {examView === "new" && pendingExams.length > 0 && (
         <section className="mb-12 animate-in fade-in">
           <h2 className="text-3xl font-black mb-6 text-indigo-600">
-            🔔 New Exams Just Uploaded
+            🔔 Check recent Uploads
           </h2>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {newExams.map((exam) => (
-              <div
-                key={exam.id}
-                className="p-6 rounded-3xl border-2 border-indigo-500 bg-indigo-50 dark:bg-indigo-900/20 shadow-xl animate-pulse"
-              >
-                <span className="text-xs font-black text-indigo-600 uppercase">
-                  NEW
-                </span>
+            {pendingExams.map((exam) => {
+              const badge = getExamBadge(exam.uploadedAt);
 
-                <h3 className="text-lg font-bold mt-2 dark:text-white">
-                  {exam.title}
-                </h3>
-
-                <p className="text-xs text-gray-500 mb-4">
-                  {exam.subject} • {exam.teacherName}
-                </p>
-
-                <button
-                  onClick={() => handleStartExam(exam)}
-                  className="w-full py-3 bg-indigo-600 text-white rounded-xl font-black hover:bg-indigo-700"
+              return (
+                <div
+                  key={exam.id}
+                  className="p-6 rounded-3xl border-2 border-indigo-500 bg-indigo-50 dark:bg-indigo-900/20 shadow-xl"
                 >
-                  Start / View
-                </button>
-              </div>
-            ))}
+                  <span
+                    className={`text-xs font-black uppercase px-2.5 py-1 rounded-full ${badge.color}`}
+                  >
+                    {badge.label}
+                  </span>
+
+                  <h3 className="text-lg font-bold mt-3 dark:text-white">
+                    {exam.title}
+                  </h3>
+
+                  <p className="text-xs text-gray-500 mb-1">
+                    {exam.subject || exam.subjectName || "General"} • {exam.teacherName || "Teacher"}
+                  </p>
+
+                  <p className="text-[11px] text-gray-400 mb-4 flex items-center gap-1">
+                    <Clock size={12} /> Uploaded {formatUploadTime(exam.uploadedAt)}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {/* ─── AUDIT TRAIL: ALREADY ATTEMPTED ─── */}
+      {examView === "new" && completedExams.length > 0 && (
+        <section className="mb-12 animate-in fade-in">
+          <h2 className="text-lg font-black mb-4 text-gray-500 dark:text-gray-400">
+            Previously Completed
+          </h2>
+
+          <div className="space-y-2">
+            {completedExams.map((exam) => {
+              const attempt = attemptedMap[exam.title];
+              return (
+                <div
+                  key={exam.id}
+                  className="flex items-center justify-between p-4 rounded-2xl border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900/40"
+                >
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold text-gray-700 dark:text-gray-200 truncate">
+                      {exam.title}
+                    </p>
+                    <p className="text-[11px] text-gray-400 mt-0.5">
+                      {exam.subject || exam.subjectName || "General"} • Uploaded {formatUploadTime(exam.uploadedAt)}
+                    </p>
+                  </div>
+                  <div className="flex-shrink-0 text-right ml-4">
+                    <p className="text-[11px] text-gray-400">
+                      Attempted {formatUploadTime(attempt.completedTime)}
+                    </p>
+                    {attempt.percentage != null && (
+                      <p className="text-xs font-black text-emerald-600 dark:text-emerald-400 mt-0.5">
+                        {attempt.percentage}%
+                      </p>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </section>
       )}
@@ -792,7 +1047,7 @@ export default function ExamPage({ studentInfo, addResult, setStudentInfo, isDar
 
           <div className="max-w-3xl mx-auto py-20 px-6">
             <div className="space-y-8">
-              {(questions[selectedExam.title] || []).map((q, idx) => (
+              {(selectedExam?.question || []).map((q, idx) => (
                 <div key={q.id} className={`p-8 rounded-3xl bg-white/5 border-2 transition-all ${unansweredIds.has(q.id) ? 'border-red-500 bg-red-500/5' : 'border-white/10'}`}>
                   <p className="text-sm font-black text-indigo-400 uppercase mb-2">Question {idx + 1}</p>
                   <h3 className="text-xl font-bold mb-8 leading-snug">{q.question}</h3>

@@ -488,7 +488,7 @@ function AttemptCard({ attempt, teacherMode, onRemark, displayName }) {
             {teacherMode && attempt.studentId && (
                 <div className="flex items-center gap-2 px-5 py-2 bg-indigo-50 dark:bg-indigo-900/20 border-b border-indigo-100 dark:border-indigo-800">
                     {(() => {
-                        const studentName = attempt.studentName || attempt.studentDisplayName || attempt.userName || attempt.name || attempt.studentId || 'Student';
+                        const studentName = attempt.firstName || 'Student';
                         return (
                             <div className="flex items-center gap-1.5">
                                 <div className="w-5 h-5 rounded-full bg-indigo-200 dark:bg-indigo-800 flex items-center justify-center text-[9px] font-black text-indigo-700 dark:text-indigo-200 flex-shrink-0">
