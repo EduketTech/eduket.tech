@@ -16,6 +16,7 @@ import {
     getDocs,
     serverTimestamp,
     writeBatch,
+    limit,
     runTransaction,
 } from 'firebase/firestore';
 import { db, auth } from '../utils/firebase';
@@ -481,31 +482,100 @@ function StepDetails({ role, details, onChange, subjects, subjectsLoading, curri
 function StepSchool({ role, school = {}, onChange }) {
     const [searching, setSearching] = useState(false);
     const [results, setResults] = useState([]);
-    const [searchQuery, setSearchQuery] = useState('');
     const [searchDone, setSearchDone] = useState(false);
 
     const set = (field, value) => onChange(prev => ({ ...prev, [field]: value }));
 
+    // Reset results & schoolId as soon as user types
+    const handleNameChange = (e) => {
+        const value = e.target.value;
+        onChange(prev => ({
+            ...prev,
+            name: value,
+            schoolId: undefined, // 👈 CRITICAL: Clear previous selection so unlinked ID isn't sent by mistake
+        }));
+        setSearchDone(false);
+    };
+
     const searchSchools = async () => {
-        if (!searchQuery.trim()) return;
+        const rawInput = (school.name || '').trim();
+        if (!rawInput) return;
+
         setSearching(true);
         setSearchDone(false);
+
         try {
-            const q = query(
+            const queryLower = rawInput.toLowerCase();
+            const queryNormalized = queryLower.replace(/[^a-z0-9]/g, ''); // Removes spaces/punctuation
+
+            // 1. Primary Query: Match via searchKeywords array
+            const qKeywords = query(
                 collection(db, 'schools'),
-                where('searchName', '>=', searchQuery.toLowerCase()),
-                where('searchName', '<=', searchQuery.toLowerCase() + '\uf8ff')
+                where('searchKeywords', 'array-contains', queryNormalized.slice(0, 10)),
+                limit(20)
             );
-            const snap = await getDocs(q);
-            setResults(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-        } catch {
+
+            // 2. Fallback Query: Range match on searchName
+            const qRange = query(
+                collection(db, 'schools'),
+                where('searchName', '>=', queryLower),
+                where('searchName', '<=', queryLower + '\uf8ff'),
+                limit(20)
+            );
+
+            // 3. General Fallback: Get top 50 recent schools for local fuzzy matching
+            const qRecent = query(
+                collection(db, 'schools'),
+                limit(50)
+            );
+
+            const [snapKeywords, snapRange, snapRecent] = await Promise.all([
+                getDocs(qKeywords).catch(() => ({ docs: [] })),
+                getDocs(qRange).catch(() => ({ docs: [] })),
+                getDocs(qRecent).catch(() => ({ docs: [] }))
+            ]);
+
+            const resultMap = new Map();
+
+            // Combine all fetched candidate documents
+            const allCandidates = [
+                ...snapKeywords.docs,
+                ...snapRange.docs,
+                ...snapRecent.docs
+            ];
+
+            allCandidates.forEach(docSnap => {
+                const data = docSnap.data();
+                const id = docSnap.id;
+                const name = (data.schoolName || data.name || '').toLowerCase();
+                const nameNormalized = name.replace(/[^a-z0-9]/g, '');
+                const keywords = data.searchKeywords || [];
+
+                // SLIGHT / FUZZY MATCH LOGIC:
+                // Matches if:
+                // - Normalized names match/contain each other ("nextgenskills" in "nextgenskillsacademy")
+                // - Any search keyword contains or is contained in query
+                // - Raw query matches part of the school name
+                const isMatch =
+                    nameNormalized.includes(queryNormalized) ||
+                    queryNormalized.includes(nameNormalized) ||
+                    name.includes(queryLower) ||
+                    keywords.some(k => k.includes(queryNormalized) || queryNormalized.includes(k));
+
+                if (isMatch) {
+                    resultMap.set(id, { id, ...data });
+                }
+            });
+
+            setResults(Array.from(resultMap.values()));
+        } catch (err) {
+            console.error('[StepSchool] Flexible search error:', err);
             setResults([]);
         } finally {
             setSearching(false);
             setSearchDone(true);
         }
     };
-
     return (
         <div className="space-y-4">
             {(role === 'student' || role === 'teacher' || role === 'parent') && (
@@ -515,7 +585,7 @@ function StepSchool({ role, school = {}, onChange }) {
                             {role === 'parent' ? "Find your child's school" : "Find your school"}
                         </p>
                         <p className="text-xs text-blue-600 dark:text-blue-400">
-                            Enter the registered school name to link your profile accurately.
+                            Search and select your school to link your account directly.
                         </p>
                     </div>
 
@@ -525,10 +595,7 @@ function StepSchool({ role, school = {}, onChange }) {
                             <Input
                                 placeholder="e.g. Greenwood High School"
                                 value={school.name || ''}
-                                onChange={(e) => {
-                                    set('name', e.target.value);
-                                    setSearchQuery(e.target.value);
-                                }}
+                                onChange={handleNameChange}
                             />
                         </div>
                         <div className="pt-6">
@@ -544,26 +611,41 @@ function StepSchool({ role, school = {}, onChange }) {
                         </div>
                     </div>
 
+                    {/* Selected Badge Indicator */}
+                    {school.schoolId && (
+                        <div className="flex items-center justify-between p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 text-xs font-bold text-emerald-700 dark:text-emerald-300">
+                            <div className="flex items-center gap-2">
+                                <CheckCircle2 size={16} className="text-emerald-500" />
+                                <span>Selected & Linked: {school.name}</span>
+                            </div>
+                            {/* <span className="text-[10px] bg-emerald-100 dark:bg-emerald-900/50 px-2 py-0.5 rounded-md font-mono">
+                                ID: {school.schoolId}
+                            </span> */}
+                        </div>
+                    )}
+
+                    {/* Search Results */}
                     {searchDone && results.length > 0 && (
                         <div className="space-y-2">
+                            <p className="text-xs font-semibold text-slate-500">Select your school from the results:</p>
                             {results.map(r => (
                                 <button
                                     key={r.id}
                                     type="button"
                                     onClick={() => onChange(prev => ({
                                         ...prev,
-                                        schoolId: r.id,
+                                        schoolId: r.id, // 👈 Sets the real doc ID
                                         name: r.schoolName || r.name || '',
                                         country: r.country || '',
                                         curriculum: r.curriculum || '',
                                     }))}
                                     className={`w-full text-left flex items-center gap-3 p-4 rounded-2xl border-2 transition-colors ${school.schoolId === r.id
-                                        ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-900/20'
+                                        ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/20'
                                         : 'border-slate-200 dark:border-slate-700 hover:border-indigo-300'
                                         }`}
                                 >
                                     <Building2 size={18} className="text-indigo-500 flex-shrink-0" />
-                                    <div>
+                                    <div className="flex-1">
                                         <p className="text-sm font-black text-slate-800 dark:text-white">
                                             {r.schoolName || r.name}
                                         </p>
@@ -574,6 +656,13 @@ function StepSchool({ role, school = {}, onChange }) {
                                     )}
                                 </button>
                             ))}
+                        </div>
+                    )}
+
+                    {/* No results message */}
+                    {searchDone && results.length === 0 && (
+                        <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-xs text-amber-700 dark:text-amber-400">
+                            No registered school found matching "{school.name}". You can still proceed, but your profile will remain unlinked until approved.
                         </div>
                     )}
                 </>
@@ -731,8 +820,8 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
             if (role === 'parent') {
                 return true;
             }
-            // Students and Teachers only require a valid school selection
-            return !!(school.schoolId || school.name?.trim());
+            // Require a real Firestore schoolId for students and teachers
+            return !!school.schoolId;
         }
 
         if (step === 2) {
@@ -770,17 +859,45 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
         return `${prefix}${formattedGrade}${year}${formattedCount}`;
     };
 
+    // Function to generate keywords/tokens from a school name
+    const generateKeywords = (name = '') => {
+        const clean = name.toLowerCase().replace(/[^a-z0-9\s]/g, '');
+        const words = clean.split(/\s+/).filter(Boolean);
+        const keywords = new Set();
+
+        // Add full string without spaces (e.g. "nextgenskills")
+        keywords.add(clean.replace(/\s+/g, ''));
+
+        // Add individual words (e.g. "nextgen", "skills")
+        words.forEach(w => keywords.add(w));
+
+        // Add word prefixes for auto-complete
+        words.forEach(w => {
+            for (let i = 1; i <= w.length; i++) {
+                keywords.add(w.slice(0, i));
+            }
+        });
+
+        return Array.from(keywords);
+    };
+
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // UPDATED saveProfile FUNCTION
+    // ══════════════════════════════════════════════════════════════════════════
     const saveProfile = async () => {
         const user = auth.currentUser;
         if (!user) {
             console.error('[ProfileSetup] No authenticated user');
-            return;
+            setError('No active session found. Please log in again.');
+            return false;
         }
 
         if (savingRef.current) {
             console.warn('[ProfileSetup] Already saving — ignoring duplicate call');
-            return;
+            return false;
         }
+
         savingRef.current = true;
         setSaving(true);
         setError('');
@@ -789,7 +906,7 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
             const currentUid = user.uid;
             const displayName = `${details.title ? details.title + ' ' : ''}${details.firstName} ${details.lastName}`.trim();
 
-            // Ensure schoolId exists even if user typed a custom school name
+            // 1. Resolve schoolId cleanly
             let schoolId = school.schoolId || '';
             if (role === 'principal' && !schoolId) {
                 schoolId = `${currentUid}_${(school.name || 'school').replace(/\s+/g, '_').substring(0, 30)}`;
@@ -799,12 +916,12 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
 
             let generatedCode = null;
 
-            // Ensure capacity limits have local fallbacks
+            // Fallback capacity limits
             const DEFAULT_TEACHER_LIMIT = typeof FREE_TEACHER_BASE !== 'undefined' ? FREE_TEACHER_BASE : 10;
             const DEFAULT_STUDENT_LIMIT = typeof FREE_STUDENT_BASE !== 'undefined' ? FREE_STUDENT_BASE : 100;
 
             // ══════════════════════════════════════════════════════════════════════
-            // TEACHER & STUDENT REGISTRATION (Atomic Transactions for Linked Schools)
+            // PATH A: ATOMIC TRANSACTION (For linked/registered schools)
             // ══════════════════════════════════════════════════════════════════════
             if ((role === 'teacher' || role === 'student') && school.schoolId) {
                 const schoolRef = doc(db, 'schools', schoolId);
@@ -813,7 +930,7 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
                     const schoolSnap = await transaction.get(schoolRef);
 
                     if (!schoolSnap.exists()) {
-                        throw new Error('School not found. Ask your principal to register the school first.');
+                        throw new Error('Selected school not found. Ask your principal to register the school first.');
                     }
 
                     const schoolData = schoolSnap.data();
@@ -847,7 +964,7 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
                             schoolId,
                             schoolName: schoolData.schoolName || school.name || '',
                             subjects: details.subjects || [],
-                            curriculum: school.curriculum || '',
+                            curriculum: schoolData.curriculum || school.curriculum || '',
                             teacherCode: generatedCode,
                             approvalStatus: 'pending',
                             createdAt: serverTimestamp(),
@@ -883,13 +1000,14 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
                             schoolId,
                             schoolName: schoolData.schoolName || school.name || '',
                             grade: details.grade || '',
-                            curriculum: school.curriculum || '',
+                            curriculum: schoolData.curriculum || school.curriculum || '',
                             studentCode: generatedCode,
                             createdAt: serverTimestamp(),
                             updatedAt: serverTimestamp(),
                         }, { merge: true });
                     }
 
+                    // Global user record
                     const userRef = doc(db, 'users', currentUid);
                     transaction.set(userRef, {
                         uid: currentUid,
@@ -902,6 +1020,7 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
                         updatedAt: serverTimestamp(),
                     }, { merge: true });
 
+                    // School Activity Log
                     const activityRef = doc(collection(db, 'schoolActivity'));
                     transaction.set(activityRef, {
                         schoolId,
@@ -917,10 +1036,10 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
                     });
                 });
 
+                // ══════════════════════════════════════════════════════════════════════
+                // PATH B: BATCH WRITE (For Principals registering new schools & Parents)
+                // ══════════════════════════════════════════════════════════════════════
             } else {
-                // ══════════════════════════════════════════════════════════════════════
-                // FALLBACK / UNLINKED BATCH WRITES (For custom school entries)
-                // ══════════════════════════════════════════════════════════════════════
                 const batch = writeBatch(db);
 
                 let childrenList = (details.children || [])
@@ -944,6 +1063,18 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
                 const primaryChildName = childrenList[0]?.childName || details.childName || '';
                 const primaryChildGrade = childrenList[0]?.childGrade || details.childGrade || '';
                 const primaryStudentCode = childrenList[0]?.studentCode || details.studentCode || '';
+
+                // Unique timestamp-suffix fallback codes for unlinked path
+                const uniqueSuffix = `${Date.now().toString().slice(-4)}${Math.floor(Math.random() * 89 + 10)}`;
+                if (role === 'student') {
+                    generatedCode = typeof generateStudentCode === 'function'
+                        ? generateStudentCode(school.name, details.grade, uniqueSuffix)
+                        : `STD-${uniqueSuffix}`;
+                } else if (role === 'teacher') {
+                    generatedCode = typeof generateTeacherCode === 'function'
+                        ? generateTeacherCode(school.name, uniqueSuffix)
+                        : `TCH-${uniqueSuffix}`;
+                }
 
                 const activityRef = doc(collection(db, 'schoolActivity'));
                 batch.set(activityRef, {
@@ -980,11 +1111,15 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
 
                 if (role === 'principal') {
                     const schoolRef = doc(db, 'schools', schoolId);
+                    const schoolNameClean = school.name || '';
+                    const searchKeywords = generateKeywords(schoolNameClean);
+
                     batch.set(schoolRef, {
                         id: schoolId,
                         schoolId,
-                        schoolName: school.name,
-                        searchName: school.name.toLowerCase(),
+                        schoolName: schoolNameClean,
+                        searchName: schoolNameClean.toLowerCase(),
+                        searchKeywords, // 👈 Saves array: ["nextgenskills", "nextgen", "skills", "n", "ne", ...]
                         country: school.country || '',
                         curriculum: school.curriculum || '',
                         institutionType: details.institutionType || '',
@@ -1023,11 +1158,11 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
                     batch.set(userRef, parentPayload, { merge: true });
 
                 } else if (role === 'teacher') {
-                    // ✅ Fix: Added Teacher batch fallback for custom/unlinked school entries
                     const teacherPayload = {
                         ...basePayload,
                         subjects: details.subjects || [],
                         curriculum: school.curriculum || '',
+                        teacherCode: generatedCode,
                         approvalStatus: 'pending',
                         createdAt: serverTimestamp(),
                     };
@@ -1036,11 +1171,11 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
                     batch.set(userRef, teacherPayload, { merge: true });
 
                 } else if (role === 'student') {
-                    // ✅ Fix: Added Student batch fallback for custom/unlinked school entries
                     const studentPayload = {
                         ...basePayload,
                         grade: details.grade || '',
                         curriculum: school.curriculum || '',
+                        studentCode: generatedCode,
                         createdAt: serverTimestamp(),
                     };
 
@@ -1054,28 +1189,47 @@ export function ProfileSetupWizard({ uid, email, onComplete }) {
             const summaryData = {
                 displayName,
                 role,
+                schoolId,
                 schoolName: school.name || '',
                 code: generatedCode || '',
             };
+
+            // Update state so StepDone (Step 3) renders properly
             setCreatedProfile(summaryData);
 
-            if (onComplete) {
-                onComplete({ role, displayName, schoolId, code: generatedCode });
-            }
+            return summaryData;
         } catch (err) {
             console.error('[ProfileSetup] Write error:', err);
             setError(err.message || 'Failed to save setup profile. Please try again.');
+            return false;
         } finally {
             setSaving(false);
             savingRef.current = false;
         }
     };
 
-    const handleNext = () => {
-        if (step < 3) {
+    // ══════════════════════════════════════════════════════════════════════════
+    // UPDATED WIZARD NAVIGATION HANDLER
+    // ══════════════════════════════════════════════════════════════════════════
+    const handleNext = async () => {
+        if (step === 2) {
+            // Save to Firestore at the end of Step 2 before showing Step 3
+            const result = await saveProfile();
+            if (result) {
+                setStep(3);
+            }
+        } else if (step < 3) {
             setStep(prev => prev + 1);
-        } else {
-            saveProfile();
+        } else if (step === 3) {
+            // Step 3 "Finish" click handles complete callback
+            if (onComplete) {
+                onComplete({
+                    role,
+                    displayName: createdProfile?.displayName || '',
+                    schoolId: createdProfile?.schoolId || '',
+                    code: createdProfile?.code || '',
+                });
+            }
         }
     };
 
